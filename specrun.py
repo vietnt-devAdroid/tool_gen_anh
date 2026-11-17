@@ -58,7 +58,7 @@ def render_timeline(spec, V, imgs, src, work, out):
         if v:
             vwav, timing = P.voice([(a, b) for a, b in v["lines"]], dur, work, v["name"], rate=v.get("rate", "+8%"))
         P.upload_scene(imgs[tail["photo"]], dur, W, H, work, PJ("tut.mp4"), t_in=tail.get("t_in", 3.0), results=[imgs[k] for k in tail.get("results", [])],
-                       t_res=tail.get("t_res", []), caps=timing)
+                       t_res=tail.get("t_res", []), caps=timing, full_results=tail.get("results_full", False))
         parts.append(PJ("tut.mp4"))
         if v:
             P.run([P.FF, "-y", "-loglevel", "error", "-i", src, "-t", f"{tail['from']}", "-vn", "-ar", "44100", "-ac", "2", PJ("a1.wav")])

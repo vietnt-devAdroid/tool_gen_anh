@@ -62,21 +62,21 @@ def existing(title, text, ref=None):
     return None
 
 
-def gen_images(title, items, tries=3):
+def gen_images(title, items, tries=3, kind="image", duration=None):
     found = [existing(title, it["text"], (it.get("files") or [None])[0]) for it in items]
     if all(found):
         return found
     if not any(found):
-        return _gen_images(title, items, tries)
+        return _gen_images(title, items, tries, kind, duration)
     missing = [it for it, f in zip(items, found) if not f]
-    new = iter(_gen_images(title, missing, tries))
+    new = iter(_gen_images(title, missing, tries, kind, duration))
     return [f or next(new) for f in found]
 
 
-def _gen_images(title, items, tries=3):
+def _gen_images(title, items, tries=3, kind="image", duration=None):
     """items = [{text, files?}] -> [đường dẫn ảnh] theo đúng thứ tự (chờ xong; tự xếp hàng lại ảnh lỗi)."""
     cid = chat_id(title)
-    r = call("/api/batch", {"chat": cid, "by": "claude", "defaults": {"kind": "image", "aspect": "9:16"},
+    r = call("/api/batch", {"chat": cid, "by": "claude", "defaults": {"kind": kind, "aspect": "9:16", "duration": duration},
                             "items": [{"text": it["text"], "files": it.get("files") or []} for it in items]})
     ids, fail = r["ids"], {}
     for attempt in range(tries):
@@ -122,10 +122,14 @@ def still(img, w, h, dur, out):
     run([FF, "-y", "-loglevel", "error", "-loop", "1", "-t", f"{dur:.3f}", "-i", img, "-vf", fit(w, h), *ENC, out])
 
 
-def reveal(a, b, w, h, total, t0, d, out, trans="wipedown"):
-    """Ảnh a hiển thị, tới t0 thì 'quét' d giây sang ảnh b, giữ tới hết total."""
+def reveal(a, b, w, h, total, t0, d, out, trans="wipedown", line=False):
+    """Ảnh a hiển thị, tới t0 thì 'quét' d giây sang ảnh b, giữ tới hết total. line=True: thêm vạch trắng chạy theo mép quét (như video gốc)."""
+    fx = f"[a][b]xfade=transition={trans}:duration={d}:offset={t0}"
+    if line:
+        y = f"ih-ih*(t-{t0})/{d}" if "up" in trans else f"ih*(t-{t0})/{d}"
+        fx += f"[x];[x]drawbox=x=0:y='{y}':w=iw:h=3:color=white:t=fill:enable='between(t,{t0},{t0 + d})'"
     run([FF, "-y", "-loglevel", "error", "-loop", "1", "-t", f"{t0 + d:.3f}", "-i", a, "-loop", "1", "-t", f"{total - t0:.3f}", "-i", b, "-filter_complex",
-         f"[0:v]{fit(w, h)}[a];[1:v]{fit(w, h)}[b];[a][b]xfade=transition={trans}:duration={d}:offset={t0},format=yuv420p[v]", "-map", "[v]", *ENC, out])
+         f"[0:v]{fit(w, h)}[a];[1:v]{fit(w, h)}[b];{fx},format=yuv420p[v]", "-map", "[v]", *ENC, out])
 
 
 def crossfade(a, b, w, h, ta, tb, d, out):
@@ -139,7 +143,10 @@ def timeline(clips, w, h, total, out):
     inputs, fc = [], []
     for k, c in enumerate(clips):
         e = (clips[k + 1]["t"] + clips[k + 1]["d"]) if k + 1 < len(clips) else total
-        inputs += ["-loop", "1", "-t", f"{e - c['t']:.3f}", "-i", c["img"]]
+        if str(c["img"]).lower().endswith((".mp4", ".webm", ".mov")):   # cảnh là video ngắn (vd. bàn tay đang vẽ): dùng từ khung đầu, cắt đúng độ dài cảnh
+            inputs += ["-t", f"{e - c['t']:.3f}", "-i", c["img"]]
+        else:
+            inputs += ["-loop", "1", "-t", f"{e - c['t']:.3f}", "-i", c["img"]]
         fc.append(f"[{k}:v]{fit(w, h)}[v{k}]")
     cur = "v0"
     for k in range(1, len(clips)):
@@ -210,7 +217,7 @@ def label(name, w, h):
     return f"drawtext=fontfile='{FONT}':text='{name}':x=(w-text_w)/2:y=h-{int(h * 0.075)}:fontsize={int(w / 15)}:fontcolor=white:borderw=4:bordercolor=black"
 
 
-def grid_video(src, imgs, labels, reveals, hero_end, work, out, W=1080, H=1920):
+def grid_video(src, imgs, labels, reveals, hero_end, work, out, W=1080, H=1920, trans="wipeup", line=False):
     """2x2: imgs[i] = (ảnh gốc, ảnh mới) hoặc (ảnh,) nếu cố định. reveals[i] = (t0, d). Sau hero_end nối nguyên end card của video gốc."""
     pw, ph = W // 2, H // 2
     panels = []
@@ -219,7 +226,7 @@ def grid_video(src, imgs, labels, reveals, hero_end, work, out, W=1080, H=1920):
         if len(im) == 1:
             still(im[0], pw, ph, hero_end, o)
         else:
-            reveal(im[0], im[1], pw, ph, hero_end, reveals[i][0], reveals[i][1], o)
+            reveal(im[0], im[1], pw, ph, hero_end, reveals[i][0], reveals[i][1], o, trans=trans, line=line)
         panels.append(o)
     inputs = sum([["-i", p] for p in panels], [])
     fc = "[0:v][1:v]hstack[t];[2:v][3:v]hstack[b];[t][b]vstack[g]"
@@ -328,11 +335,15 @@ SCRIPT77 = [(0.3, "Primeiro, envie a sua foto."), (3.0, "Escolha uma foto com o 
             (6.4, "Pronto! Veja o seu retrato a lápis."), (9.8, "Salve e compartilhe!")]
 
 
-def build77(src, imgs, photo, work, out):
+HAND_PROMPT = ("Use the attached image as the exact first frame. The camera is top-down and stays completely still. The pencil drawing on the sketchbook page stays exactly the same; "
+               "only the real hand holding the black pencil moves, making small natural shading strokes back and forth over the drawing at the lower right, the way a person draws. No cuts, no text.")
+
+
+def build77(src, heroes, imgs, photo, work, out):
     W, H = 576, 1024
     P = lambda n: os.path.join(work, n)
-    clips = [{"img": imgs[0], "t": 0, "trans": "", "d": 0}, {"img": imgs[1], "t": 1.85, "trans": "fade", "d": 0.2},
-             {"img": imgs[2], "t": 3.6, "trans": "fade", "d": 0.25}, {"img": imgs[3], "t": 5.65, "trans": "fade", "d": 0.25}]
+    clips = [{"img": heroes[0], "t": 0, "trans": "", "d": 0}, {"img": heroes[1], "t": 1.85, "trans": "fade", "d": 0.2},
+             {"img": heroes[2], "t": 3.6, "trans": "fade", "d": 0.25}, {"img": heroes[3], "t": 5.65, "trans": "fade", "d": 0.25}]
     timeline(clips, W, H, 8.4, P("hero.mp4"))
     dur = duration(src) - 8.4
     vwav, timing = voice(SCRIPT77, dur, work, VOICE77)
@@ -361,7 +372,8 @@ def v83(i):
 
 
 def build83(src, base, edits, labels, work, out):
-    grid_video(src, [(edits[0],), (edits[1],), (base, edits[2]), (base, edits[3])], labels, [None, None, (8.8, 0.8), (12.8, 0.8)], 13.833, work, out)
+    # cả 4 ô đều biến đổi từ ảnh gốc, đúng mốc video gốc (quét từ dưới lên), chuyển nhanh 0,5s
+    grid_video(src, [(base, edits[0]), (base, edits[1]), (base, edits[2]), (base, edits[3])], labels, [(0.5, 0.5), (4.0, 0.5), (7.4, 0.5), (11.0, 0.5)], 13.833, work, out)
 
 
 def v84(i):
@@ -383,7 +395,8 @@ def v84(i):
 
 
 def build84(src, base, edits, labels, work, out):
-    grid_video(src, [(base, edits[0]), (base, edits[1]), (base, edits[2]), (base, edits[3])], labels, [(1.6, 0.8), (4.8, 0.8), (8.8, 0.8), (12.8, 0.8)], 13.833, work, out)
+    # đúng mốc bắt đầu của video gốc (0.9 / 4.3 / 8.2 / 11.9s), quét từ dưới lên kèm vạch trắng, nhanh hơn (0,7s)
+    grid_video(src, [(base, edits[0]), (base, edits[1]), (base, edits[2]), (base, edits[3])], labels, [(0.9, 0.7), (4.3, 0.7), (8.2, 0.7), (11.9, 0.7)], 13.833, work, out, line=True)
 
 
 def v104(i):
@@ -411,7 +424,7 @@ def v104(i):
 UPLOAD_TPL = os.path.join(ROOT, "assets", "upload_template.png")   # 1080x1920: nút "UPLOAD YOUR PHOTO" + khung tải ảnh (x188-892, y422-1497)
 
 
-def upload_scene(photo, dur, W, H, work, out, t_in=3.0, results=(), t_res=(), caps=None):
+def upload_scene(photo, dur, W, H, work, out, t_in=3.0, results=(), t_res=(), caps=None, full_results=False):
     """Mẫu upload hiện ra; tới t_in giây ảnh của nhân vật hiện dần vào đúng khung (bo góc); rồi (nếu có) lần lượt hiện các ảnh kết quả tại t_res. caps = [(bắt đầu, kết thúc, chữ)]."""
     from PIL import Image, ImageDraw
     k = W / 1080
@@ -421,14 +434,19 @@ def upload_scene(photo, dur, W, H, work, out, t_in=3.0, results=(), t_res=(), ca
     mp = os.path.join(work, "mask.png")
     mask.save(mp)
     imgs, ts = [photo, *results], [t_in, *t_res]
+    nm = 1 if full_results else len(imgs)   # số ảnh cần mặt nạ bo góc
     inputs = ["-loop", "1", "-t", f"{dur:.3f}", "-i", UPLOAD_TPL, "-loop", "1", "-t", f"{dur:.3f}", "-i", mp]
-    fc = [f"[0:v]scale={W}:{H},setsar=1,fps=30,format=yuv420p[bg]", f"[1:v]format=gray,split={len(imgs)}" + "".join(f"[m{i}]" for i in range(len(imgs)))]
+    fc = [f"[0:v]scale={W}:{H},setsar=1,fps=30,format=yuv420p[bg]", (f"[1:v]format=gray,split={nm}" + "".join(f"[m{i}]" for i in range(nm)) if nm > 1 else "[1:v]format=gray[m0]")]
     cur = "bg"
     for i, (im, t) in enumerate(zip(imgs, ts)):
         inputs += ["-loop", "1", "-t", f"{dur - t:.3f}", "-i", im]
-        fc.append(f"[{i + 2}:v]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},format=yuva420p[s{i}]")
-        fc.append(f"[s{i}][m{i}]alphamerge,fade=t=in:st=0:d={0.6 if i == 0 else 0.4}:alpha=1,setpts=PTS+{t}/TB[ov{i}]")
-        fc.append(f"[{cur}][ov{i}]overlay={x}:{y}:eof_action=pass[o{i}]")
+        if full_results and i > 0:   # ảnh kết quả phủ TOÀN MÀN HÌNH (không còn khung upload)
+            fc.append(f"[{i + 2}:v]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},format=yuva420p,fade=t=in:st=0:d=0.3:alpha=1,setpts=PTS+{t}/TB[ov{i}]")
+            fc.append(f"[{cur}][ov{i}]overlay=0:0:eof_action=pass[o{i}]")
+        else:
+            fc.append(f"[{i + 2}:v]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},format=yuva420p[s{i}]")
+            fc.append(f"[s{i}][m{i}]alphamerge,fade=t=in:st=0:d={0.6 if i == 0 else 0.4}:alpha=1,setpts=PTS+{t}/TB[ov{i}]")
+            fc.append(f"[{cur}][ov{i}]overlay={x}:{y}:eof_action=pass[o{i}]")
         cur = f"o{i}"
     raw = out if not caps else os.path.join(work, "up_raw.mp4")
     run([FF, "-y", "-loglevel", "error", *inputs, "-filter_complex", ";".join(fc) + f";[{cur}]format=yuv420p[v]", "-map", "[v]", "-t", f"{dur:.3f}", *ENC, raw])
@@ -457,7 +475,7 @@ def build104(src, pairs, work, out):
     dur = duration(src) - 5.9
     vwav, timing = voice(SCRIPT104, dur, work, VOICE104, rate="+15%")
     # thay đoạn giới thiệu app của người khác bằng mẫu "Upload your photo" của bạn: ảnh vào khung rồi hiện 2 ảnh hoạt hình kết quả
-    upload_scene(pairs[0][0], dur, W, H, work, P("tut.mp4"), t_in=2.8, results=[c0, c1], t_res=[4.9, 7.0], caps=timing)
+    upload_scene(pairs[0][0], dur, W, H, work, P("tut.mp4"), t_in=2.8, results=[c0, c1], t_res=[4.9, 7.0], caps=timing, full_results=True)
     run([FF, "-y", "-loglevel", "error", "-i", src, "-t", "5.9", "-vn", "-ar", "44100", "-ac", "2", P("a1.wav")])
     run([FF, "-y", "-loglevel", "error", "-i", P("a1.wav"), "-i", vwav, "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1[a]", "-map", "[a]", "-c:a", "aac", "-b:a", "128k", P("audio.m4a")])
     concat([P("hero_cap.mp4"), P("tut.mp4")], P("audio.m4a"), out, work)
@@ -479,9 +497,12 @@ def run_variant(kind, i, args):
         if kind == "Z0073":
             build73(src, imgs, work, out)
         else:
+            heroes = imgs
+            if not args.dry:   # bàn tay cầm bút chì chuyển động như video gốc: Muse tạo clip ngắn từ từng tranh (tranh giữ nguyên, chỉ tay cử động)
+                heroes = gen_images(f"{kind} - clip tay", [{"text": HAND_PROMPT, "files": [im]} for im in imgs], kind="video", duration=5)
             photo = G([{"text": "Using this pencil drawing as reference, create a photorealistic phone selfie photo of the same woman (same face, hair and expression), plain neutral background, "
-                                "head and shoulders, natural light, no hand, no paper, no pencil. Vertical 9:16.", "files": [imgs[0]]}])[0]
-            build77(src, imgs, photo, work, out)
+                                "wearing a plain solid-colour crew-neck T-shirt that fully covers the shoulders and chest, head and torso framing with the shirt clearly visible, natural light, no hand, no paper, no pencil. Vertical 9:16.", "files": [imgs[0]]}])[0]
+            build77(src, heroes, imgs, photo, work, out)
     elif kind in ("Z0083", "Z0084"):
         spec = (v83 if kind == "Z0083" else v84)(i)
         base = G([spec["base"]])[0]
