@@ -125,10 +125,12 @@ def still(img, w, h, dur, out):
 def reveal(a, b, w, h, total, t0, d, out, trans="wipedown", line=False):
     """Ảnh a hiển thị, tới t0 thì 'quét' d giây sang ảnh b, giữ tới hết total. line=True: thêm vạch trắng chạy theo mép quét (như video gốc)."""
     fx = f"[a][b]xfade=transition={trans}:duration={d}:offset={t0}"
+    extra, mapin = [], "[v]"
     if line:
-        y = f"ih-ih*(t-{t0})/{d}" if "up" in trans else f"ih*(t-{t0})/{d}"
-        fx += f"[x];[x]drawbox=x=0:y='{y}':w=iw:h=3:color=white:t=fill:enable='between(t,{t0},{t0 + d})'"
-    run([FF, "-y", "-loglevel", "error", "-loop", "1", "-t", f"{t0 + d:.3f}", "-i", a, "-loop", "1", "-t", f"{total - t0:.3f}", "-i", b, "-filter_complex",
+        y = f"H-H*(t-{t0})/{d}" if "up" in trans else f"H*(t-{t0})/{d}"
+        fx += f",format=yuv420p[x];[2:v]format=yuv420p[ln];[x][ln]overlay=x=0:y='{y}':enable='between(t,{t0},{t0 + d})':eof_action=repeat"
+        extra = ["-f", "lavfi", "-t", f"{total:.3f}", "-i", f"color=c=white:s={w}x3:r=30"]
+    run([FF, "-y", "-loglevel", "error", "-loop", "1", "-t", f"{t0 + d:.3f}", "-i", a, "-loop", "1", "-t", f"{total - t0:.3f}", "-i", b, *extra, "-filter_complex",
          f"[0:v]{fit(w, h)}[a];[1:v]{fit(w, h)}[b];{fx},format=yuv420p[v]", "-map", "[v]", *ENC, out])
 
 
@@ -217,7 +219,7 @@ def label(name, w, h):
     return f"drawtext=fontfile='{FONT}':text='{name}':x=(w-text_w)/2:y=h-{int(h * 0.075)}:fontsize={int(w / 15)}:fontcolor=white:borderw=4:bordercolor=black"
 
 
-def grid_video(src, imgs, labels, reveals, hero_end, work, out, W=1080, H=1920, trans="wipeup", line=False, audio_src=None):
+def grid_video(src, imgs, labels, reveals, hero_end, work, out, W=1080, H=1920, trans="wipeup", line=False, audio_src=None, build_end=True):
     """2x2: imgs[i] = (ảnh gốc, ảnh mới) hoặc (ảnh,) nếu cố định. reveals[i] = (t0, d). Sau hero_end nối nguyên end card của video gốc."""
     pw, ph = W // 2, H // 2
     panels = []
@@ -237,6 +239,8 @@ def grid_video(src, imgs, labels, reveals, hero_end, work, out, W=1080, H=1920, 
     fc += ";[g]" + ",".join(dts) + "[v]"
     hero = os.path.join(work, "hero.mp4")
     run([FF, "-y", "-loglevel", "error", *inputs, "-filter_complex", fc, "-map", "[v]", *ENC, hero])
+    if not build_end:   # chỉ dựng phần lưới (nơi gọi tự nối đoạn sau)
+        return hero
     endcard = os.path.join(work, "end.mp4")
     cut(src, hero_end, 999, W, H, endcard)
     concat([hero, endcard], audio_src or src, out, work)
@@ -458,6 +462,38 @@ def upload_scene(photo, dur, W, H, work, out, t_in=3.0, results=(), t_res=(), ca
 
 VOICE104 = "en-US-JennyNeural"
 SCRIPT104 = [(0.3, "First, upload your photo."), (4.9, "Boom! Your cartoon is ready."), (8.0, "Share it!")]
+
+
+def upload_flow(before, after, dur, W, H, work, out, t_in=1.6, load_dur=1.6):
+    """Khung upload của bạn: hiện mẫu -> ảnh BEFORE vào khung (bo góc) -> LOADING (làm tối + thanh tiến độ) -> ảnh AFTER toàn màn hình. Không có phụ đề.
+    dur = tổng độ dài đoạn; trả về (t_after) = thời điểm ảnh after hiện."""
+    from PIL import Image, ImageDraw
+    k = W / 1080
+    x, y, w, h, r = round(188 * k), round(422 * k), round(704 * k) // 2 * 2, round(1075 * k) // 2 * 2, round(50 * k)
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, w - 1, h - 1), radius=r, fill=255)
+    mp = os.path.join(work, "mask.png")
+    mask.save(mp)
+    t_load = t_in + 0.9
+    t_after = t_load + load_dur
+    fc = [f"[0:v]scale={W}:{H},setsar=1,fps=30,format=yuv420p[bg]", "[1:v]format=gray[m0]",
+          f"[2:v]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},format=yuva420p[s0]", f"[s0][m0]alphamerge,fade=t=in:st=0:d=0.5:alpha=1,setpts=PTS+{t_in}/TB[ov0]",
+          "[bg][ov0]overlay=" + f"{x}:{y}:eof_action=pass[o0]"]
+    fonts = f"fontfile='{FONT}'"
+    seg = 20
+    bx0, bw = x + int(w * 0.15), int(w * 0.7)
+    parts = [f"drawbox=x={x}:y={y}:w={w}:h={h}:color=black@0.55:t=fill:enable='between(t,{t_load},{t_after})'",
+             f"drawtext={fonts}:text='Loading...':x={x}+({w}-text_w)/2:y={y}+{int(h * 0.46)}-text_h:fontsize={int(W / 20)}:fontcolor=white:enable='between(t,{t_load},{t_after})'",
+             f"drawbox=x={bx0}:y={y}+{int(h * 0.5)}:w={bw}:h=8:color=white@0.25:t=fill:enable='between(t,{t_load},{t_after})'"]
+    for i in range(seg):
+        ts = t_load + i * load_dur / seg
+        parts.append(f"drawbox=x={bx0 + i * bw // seg}:y={y}+{int(h * 0.5)}:w={bw // seg + 1}:h=8:color=white:t=fill:enable='between(t,{ts:.3f},{t_after})'")
+    fc.append("[o0]" + ",".join(parts) + "[o1]")
+    fc.append(f"[3:v]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},format=yuva420p,fade=t=in:st=0:d=0.3:alpha=1,setpts=PTS+{t_after}/TB[ov1]")
+    fc.append("[o1][ov1]overlay=0:0:eof_action=pass,format=yuv420p[v]")
+    run([FF, "-y", "-loglevel", "error", "-loop", "1", "-t", f"{dur:.3f}", "-i", UPLOAD_TPL, "-loop", "1", "-t", f"{dur:.3f}", "-i", mp, "-loop", "1", "-t", f"{dur - t_in:.3f}", "-i", before,
+         "-loop", "1", "-t", f"{dur - t_after:.3f}", "-i", after, "-filter_complex", ";".join(fc), "-map", "[v]", "-t", f"{dur:.3f}", *ENC, out])
+    return t_after
 
 
 def build104(src, pairs, work, out):

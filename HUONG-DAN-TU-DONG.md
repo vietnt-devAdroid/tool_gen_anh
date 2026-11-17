@@ -22,3 +22,9 @@ Ngày order (ngày làm) | Mã order | Tên video | **Sample** (tên file video 
 - `python specrun.py dry|run spec.json` dựng biến thể từ spec (ví dụ ở `examples\`)
 - `python upload.py file.mp4 --path 17-11/Z0200` tải lên Drive
 - Log: `userdata\daily_log.txt`; trạng thái đã xử lý: `userdata\daily_state.json`
+
+## Loại video "ảnh before -> ảnh after"
+- Phần đầu bám sát video gốc (ảnh tĩnh, mốc cảnh, chuyển cảnh). Đoạn app của người khác (CapCut/end card) bị bỏ, thay bằng **khung upload của bạn**: mẫu upload -> ảnh BEFORE vào khung -> LOADING -> ảnh AFTER toàn màn hình (`tail.mode = "flow"`). Video không có đoạn app khác thì nối thêm khung upload ở cuối.
+- **Ảnh after mẫu** (1 ảnh) đặt ở `assets\after_samples\<Mã order>.png` hoặc `default.png` (hoặc `after_sample.png` cạnh video mẫu). Ảnh after của từng biến thể được tạo từ ảnh before theo kiểu ảnh mẫu đó.
+- Âm thanh: có nhạc -> lặp nhạc gốc hết video. Có lời nói -> viết lời mới bằng ngôn ngữ trong cột Ngôn ngữ, lồng tiếng, **không phụ đề**.
+- Chuyển cảnh nhanh, không để khoảng chết quá 1 giây; video có thể dài hơn gốc.
