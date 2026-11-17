@@ -15,6 +15,7 @@ Spec (JSON):
            "voice": {"name": "en-US-JennyNeural", "rate": "+15%", "lines": [[0.3, "First, upload your photo."]]}},
   "variants": [ {"stages": [ [ {"key": "s0", "prompt": "..."}, ... ],  [ {"key": "e0", "prompt": "...", "ref": "s0"} ] ]} ]   # stage sau có thể dùng ảnh stage trước làm tham chiếu (ref)
 }
+  "revoice": {"name": "pt-BR-FranciscaNeural", "rate": "+8%", "lines": [[0.2, "Câu mới bằng ngôn ngữ đích"], [4.6, "..."]]}   # tuỳ chọn: thay HẲN lời đọc gốc bằng lồng tiếng mới (giữ đúng thời lượng video)
 grid2x2: {"type":"grid2x2","hero_end":13.83,"panels":[{"imgs":["bob"],"label":"Blunt Bob"},{"imgs":["base","curls"],"reveal":[8.8,0.8],"label":"Loose Curls"}, ...x4]}
          (variant có thể có "labels":[4 nhãn] để đổi nhãn). Phần sau hero_end luôn giữ nguyên video gốc.
 """
@@ -30,6 +31,18 @@ def resolve(imgs, key, src, work):
             P.frame_at(src, float(key[4:]), out)
         return out
     return imgs[key]
+
+
+def head_audio(spec, src, seconds, work):
+    """Âm thanh cho đoạn đầu dài 'seconds': nếu spec có revoice thì lồng tiếng mới (thay hẳn tiếng gốc), ngược lại giữ nguyên tiếng gốc."""
+    rv = spec.get("revoice")
+    wav = os.path.join(work, "head_audio.wav")
+    if rv:
+        lines = [(t, txt) for t, txt in rv["lines"] if t < seconds]
+        vw, _ = P.voice(lines, seconds, work, rv["name"], rate=rv.get("rate", "+8%"))
+        return vw
+    P.run([P.FF, "-y", "-loglevel", "error", "-i", src, "-t", f"{seconds}", "-vn", "-ar", "44100", "-ac", "2", wav])
+    return wav
 
 
 def render_timeline(spec, V, imgs, src, work, out):
@@ -61,9 +74,14 @@ def render_timeline(spec, V, imgs, src, work, out):
                        t_res=tail.get("t_res", []), caps=timing, full_results=tail.get("results_full", False))
         parts.append(PJ("tut.mp4"))
         if v:
-            P.run([P.FF, "-y", "-loglevel", "error", "-i", src, "-t", f"{tail['from']}", "-vn", "-ar", "44100", "-ac", "2", PJ("a1.wav")])
-            P.run([P.FF, "-y", "-loglevel", "error", "-i", PJ("a1.wav"), "-i", vwav, "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1[a]", "-map", "[a]", "-c:a", "aac", "-b:a", "128k", PJ("audio.m4a")])
+            ha = head_audio(spec, src, tail["from"], work)
+            P.run([P.FF, "-y", "-loglevel", "error", "-i", ha, "-i", vwav, "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1[a]", "-map", "[a]", "-c:a", "aac", "-b:a", "128k", PJ("audio.m4a")])
             audio = PJ("audio.m4a")
+    if spec.get("revoice") and audio == src:   # lồng tiếng mới cho toàn video (không có đoạn upload có giọng riêng)
+        total_dur = P.duration(src)
+        vw = head_audio(spec, src, total_dur, work)
+        P.run([P.FF, "-y", "-loglevel", "error", "-i", vw, "-c:a", "aac", "-b:a", "128k", PJ("audio.m4a")])
+        audio = PJ("audio.m4a")
     P.concat(parts, audio, out, work)
 
 
@@ -71,7 +89,14 @@ def render_grid(spec, V, imgs, src, work, out):
     W, H = spec["size"]
     panels = spec["panels"]
     labels = V.get("labels") or [p.get("label", "") for p in panels]
-    P.grid_video(src, [tuple(imgs[k] for k in p["imgs"]) for p in panels], labels, [p.get("reveal") for p in panels], spec["hero_end"], work, out, W, H)
+    audio = None
+    if spec.get("revoice"):
+        total_dur = P.duration(src)
+        vw = head_audio(spec, src, total_dur, work)
+        audio = os.path.join(work, "audio.m4a")
+        P.run([P.FF, "-y", "-loglevel", "error", "-i", vw, "-c:a", "aac", "-b:a", "128k", audio])
+    P.grid_video(src, [tuple(imgs[k] for k in p["imgs"]) for p in panels], labels, [p.get("reveal") for p in panels], spec["hero_end"], work, out, W, H, audio_src=audio,
+                 trans=spec.get("trans", "wipeup"), line=spec.get("line", False))
 
 
 def run_variant(spec, i, args):

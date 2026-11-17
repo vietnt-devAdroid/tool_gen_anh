@@ -217,7 +217,7 @@ def label(name, w, h):
     return f"drawtext=fontfile='{FONT}':text='{name}':x=(w-text_w)/2:y=h-{int(h * 0.075)}:fontsize={int(w / 15)}:fontcolor=white:borderw=4:bordercolor=black"
 
 
-def grid_video(src, imgs, labels, reveals, hero_end, work, out, W=1080, H=1920, trans="wipeup", line=False):
+def grid_video(src, imgs, labels, reveals, hero_end, work, out, W=1080, H=1920, trans="wipeup", line=False, audio_src=None):
     """2x2: imgs[i] = (ảnh gốc, ảnh mới) hoặc (ảnh,) nếu cố định. reveals[i] = (t0, d). Sau hero_end nối nguyên end card của video gốc."""
     pw, ph = W // 2, H // 2
     panels = []
@@ -239,7 +239,7 @@ def grid_video(src, imgs, labels, reveals, hero_end, work, out, W=1080, H=1920, 
     run([FF, "-y", "-loglevel", "error", *inputs, "-filter_complex", fc, "-map", "[v]", *ENC, hero])
     endcard = os.path.join(work, "end.mp4")
     cut(src, hero_end, 999, W, H, endcard)
-    concat([hero, endcard], src, out, work)
+    concat([hero, endcard], audio_src or src, out, work)
 
 
 def ass_file(path, events, w, h, marginv):

@@ -1,22 +1,33 @@
-"""daily - đọc Google Sheet (mỗi ngày một tab, ví dụ "17-11"), kiểm tra đã điền chưa, tải video mẫu về máy.
+"""daily - đọc tab kế hoạch trong Google Sheet, lấy các hàng của ngày hôm nay, tìm video mẫu (Sample) để làm biến thể.
 
-Sheet phải đặt chế độ "Bất kỳ ai có đường liên kết đều xem được"; file video trên Drive cũng vậy.
-Cột (nhận theo tên tiêu đề, không phân biệt hoa thường/dấu): tên video | link | yêu cầu. Nếu không có hàng tiêu đề thì lấy 3 cột đầu.
+Cấu trúc sheet (tab "Plan test_AI Photo", MỘT tab chung, cột nhận theo tên tiêu đề, không phân biệt hoa thường/dấu):
+  Ngày order      = ngày cần làm (vd 17/11)          Mã order    = mã video làm (vd Z00126)
+  Tên video       = tên video                         Sample      = video mẫu (tên file, vd Z00126.mp4)
+  Yêu cầu biến thể= kiểu biến thể (vd "Thay đổi nhân vật")   Nhân vật = mô tả nhân vật cần dùng
+  Ảnh before      = nguồn ảnh before (tự gen / ...)  Hook / Ngôn ngữ = hook, ngôn ngữ lồng tiếng mới
+  Số lượng dự kiến= SỐ VIDEO cần tạo                  Status / Link hoàn thành / ... (chỉ đọc)
+Tên file kết quả: <Mã order>_<Tên video>_<số thứ tự>.mp4 (không có Tên video thì dùng Mã order + tên Sample).
 
-  python daily.py check    [--date 2026-11-17]    -> JSON: tab có không, các hàng, hàng nào đã đủ 3 cột, hàng nào đã xử lý
-  python daily.py download [--date ...]           -> tải video của các hàng ĐỦ + CHƯA xử lý vào <out_root>/<ngày>/<tên>/source.mp4, in JSON
-  python daily.py done  <ngày> <tên> [ghi chú]    -> đánh dấu hàng đã xử lý xong (để lần sau không chạy lại)
-  python daily.py fail  <ngày> <tên> <lý do>      -> ghi lỗi (vẫn cho chạy lại lần sau)
-  python daily.py config                          -> in cấu hình
-Cấu hình: daily_config.json cạnh file này (sheet_url, tab_format, default_variants, out_root, upload_url, upload_token).
+  python daily.py check    [--date 2026-11-17]   -> JSON: các hàng của ngày, hàng nào sẵn sàng (có Mã order + Sample), đã xử lý chưa
+  python daily.py download [--date ...]          -> tìm/tải video mẫu của các hàng sẵn sàng vào <out_root>/<dd-mm>/<mã>_<tên>/source.mp4
+  python daily.py done  <YYYY-MM-DD> <mã order> [ghi chú]    -> đánh dấu đã xong (lần sau không làm lại)
+  python daily.py fail  <YYYY-MM-DD> <mã order> <lý do>      -> ghi lỗi (vẫn cho chạy lại)
+  python daily.py config
+Cấu hình daily_config.json: sheet_url, tab_name, default_variants, out_root, sample_dir (thư mục máy chứa video mẫu) / sample_drive_folder (link thư mục Drive),
+                           upload_url, upload_token, upload_folder_id.
 """
-import argparse, csv, datetime, hashlib, io, json, os, re, sys, urllib.error, urllib.parse, urllib.request, unicodedata
+import argparse, csv, datetime, io, json, os, re, shutil, sys, unicodedata, urllib.error, urllib.parse, urllib.request
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(ROOT, "daily_config.json")
 STATE_PATH = os.path.join(ROOT, "userdata", "daily_state.json")
 UA = {"User-Agent": "Mozilla/5.0"}
-DEFAULT_CFG = {"sheet_url": "", "tab_format": "%d-%m", "default_variants": 10, "out_root": "D:/ketqua", "upload_url": "", "upload_token": ""}
+DEFAULT_CFG = {"sheet_url": "", "tab_name": "Plan test_AI Photo", "default_variants": 10, "out_root": "D:/ketqua", "sample_dir": "", "sample_drive_folder": "",
+               "upload_url": "", "upload_token": "", "upload_folder_id": ""}
+# khoá logic -> các cụm từ (đã bỏ dấu, chữ thường) nhận diện tiêu đề cột
+COLS = {"date": ["ngay order"], "code": ["ma order"], "concept": ["concept"], "angle": ["angle"], "insight": ["insight"], "name": ["ten video"], "sample": ["sample"],
+        "level": ["level"], "request": ["yeu cau bien the", "yeu cau"], "character": ["nhan vat"], "hook": ["hook"], "language": ["ngon ngu"], "before": ["anh before"],
+        "after": ["anh after"], "qty": ["so luong du kien"], "qty_done": ["so luong thuc dat"], "status": ["status"], "link_done": ["link hoan thanh"]}
 
 
 def cfg():
@@ -57,30 +68,8 @@ def sheet_id(url):
     return m.group(1)
 
 
-def list_tabs(sid):
-    """Tên các tab của sheet (đọc từ trang htmlview/edit). Trả [] nếu không đọc được."""
-    names = []
-    for suffix in ("/htmlview", "/edit"):
-        try:
-            html = get(f"https://docs.google.com/spreadsheets/d/{sid}{suffix}").read().decode("utf-8", "replace")
-        except Exception:
-            continue
-        names += [re.sub(r"<[^>]+>", "", n).strip() for n in re.findall(r'id="sheet-button-\d+"[^>]*>\s*<a[^>]*>(.*?)</a>', html, flags=re.S)]
-        names += re.findall(r'"name":"([^"]{1,60})","gid"', html)
-        names += re.findall(r'\\"title\\":\\"([^"\\]{1,60})\\",\\"sheetId', html)
-        if names:
-            break
-    seen, out = set(), []
-    for n in names:
-        n = n.encode().decode("unicode_escape", "ignore") if "\\u" in n else n
-        if n and n not in seen:
-            seen.add(n)
-            out.append(n)
-    return out
-
-
 def fetch_tab(sid, tab):
-    """CSV của tab (None nếu tab không tồn tại). gviz âm thầm trả tab đầu khi tên sai, nên so với tab 'mặc định' để phát hiện."""
+    """CSV của tab. gviz âm thầm trả tab đầu khi tên sai: nếu nội dung trùng tab 'mặc định' thì coi như tab không tồn tại (trừ khi tab đó thật sự là tab đầu)."""
     q = lambda name: f"https://docs.google.com/spreadsheets/d/{sid}/gviz/tq?tqx=out:csv&sheet={urllib.parse.quote(name)}"
     try:
         body = get(q(tab)).read().decode("utf-8-sig", "replace")
@@ -88,131 +77,129 @@ def fetch_tab(sid, tab):
         raise SystemExit(f"Không đọc được sheet (HTTP {e.code}). Kiểm tra sheet đã chia sẻ 'bất kỳ ai có link' chưa.")
     if "<html" in body[:200].lower():
         raise SystemExit("Sheet trả về trang đăng nhập: chưa chia sẻ công khai (bất kỳ ai có link đều xem được).")
-    tabs = list_tabs(sid)
-    if tabs:
-        return body if tab in tabs else None
-    fallback = get(q("__khong_ton_tai__")).read().decode("utf-8-sig", "replace")   # tab sai -> gviz trả tab đầu tiên
+    fallback = get(q("__khong_ton_tai__")).read().decode("utf-8-sig", "replace")
     return None if body == fallback and body.strip() else body
 
 
-def parse_rows(body):
-    rows = [r for r in csv.reader(io.StringIO(body))]
+def parse_date(text, default_year):
+    """'17/11', '17/11/2026', '17-11' -> (ngày, tháng) hoặc None."""
+    m = re.match(r"\s*(\d{1,2})\s*[/\-.]\s*(\d{1,2})(?:\s*[/\-.]\s*(\d{2,4}))?\s*$", str(text or ""))
+    if not m:
+        return None
+    d, mo = int(m[1]), int(m[2])
+    return (d, mo) if 1 <= d <= 31 and 1 <= mo <= 12 else None
+
+
+def clean_request(req):
+    """Cột 'Yêu cầu biến thể / Nguồn' đôi khi chứa ghi chú nguồn ('Lấy từ Social Peta...'): khi đó yêu cầu mặc định là thay đổi nhân vật."""
+    r = (req or "").strip()
+    if not r or re.match(r"(?i)\s*(l[aấ]y|social|ngu[oồ]n)", r):
+        return "Thay đổi nhân vật"
+    return r
+
+
+def parse_plan(body):
+    rows = list(csv.reader(io.StringIO(body)))
     if not rows:
         return []
     head = [norm(c) for c in rows[0]]
-
-    def col(*keys):
-        for i, h in enumerate(head):
-            if any(k in h for k in keys):
-                return i
-        return None
-    ci = [col("ten video", "ten", "name", "video"), col("link", "url", "duong dan"), col("yeu cau", "request", "note", "mo ta")]
-    if None in ci or len(set(ci)) < 3:
-        ci, data = [0, 1, 2], rows           # không có tiêu đề: 3 cột đầu
-    else:
-        data = rows[1:]
+    idx = {}
+    for key, pats in COLS.items():
+        for p in pats:
+            i = next((n for n, h in enumerate(head) if p in h), None)
+            if i is not None:
+                idx[key] = i
+                break
+    if "date" not in idx or "code" not in idx or "sample" not in idx:
+        raise SystemExit("Không tìm thấy các cột Ngày order / Mã order / Sample trong tab (đổi tiêu đề cột?)")
     out = []
-    for n, r in enumerate(data, start=2 if data is not rows else 1):
-        cell = lambda k: (r[ci[k]].strip() if ci[k] < len(r) else "")
-        name, link, req = cell(0), cell(1), cell(2)
-        if not (name or link or req):
-            continue
-        out.append({"row": n, "name": name, "link": link, "request": req, "complete": bool(name and link and req)})
+    for n, r in enumerate(rows[1:], start=2):
+        cell = lambda k: (r[idx[k]].strip().replace("\n", " ") if k in idx and idx[k] < len(r) else "")
+        rec = {k: cell(k) for k in COLS}
+        rec["row"] = n
+        out.append(rec)
     return out
 
 
-def file_id(link):
-    for pat in (r"/file/d/([\w-]+)", r"[?&]id=([\w-]+)", r"/d/([\w-]+)"):
-        m = re.search(pat, link)
-        if m:
-            return m.group(1)
-    return None
+def variants_of(rec, default):
+    m = re.search(r"\d+", rec.get("qty", "") or "")
+    return int(m.group(0)) if m else default
 
 
-def row_key(r):
-    return hashlib.sha1(f"{r['name']}|{r['link']}|{r['request']}".encode()).hexdigest()[:12]
-
-
-def variants_in(req, default):
-    m = re.search(r"(\d{1,2})\s*(?:biến thể|bien the|variant|bản|ban)", req, flags=re.I)
-    return int(m.group(1)) if m else default
+def safe(s):
+    return re.sub(r'[\\/:*?"<>|\s]+', "_", s).strip("_")
 
 
 def check(date):
     c = cfg()
     if not c["sheet_url"]:
         raise SystemExit("Chưa có sheet_url trong daily_config.json")
-    sid, tab = sheet_id(c["sheet_url"]), date.strftime(c["tab_format"]).lstrip("0")
-    cand = [date.strftime(c["tab_format"]), tab, date.strftime(c["tab_format"]).replace("-0", "-")]
-    body = None
-    for t in dict.fromkeys(cand):
-        body = fetch_tab(sid, t)
-        if body is not None:
-            tab = t
-            break
+    sid = sheet_id(c["sheet_url"])
+    body = fetch_tab(sid, c["tab_name"])
     if body is None:
-        return {"date": str(date), "tab": tab, "tab_exists": False, "rows": [], "ready": False, "reason": f"chưa có tab '{tab}'"}
-    rows = parse_rows(body)
-    st = state()
-    for r in rows:
-        r["key"] = row_key(r)
-        r["processed"] = st.get(str(date), {}).get(r["key"], {}).get("status") == "done"
-        r["variants"] = variants_in(r["request"], c["default_variants"])
-        r["file_id"] = file_id(r["link"]) if r["link"] else None
-    complete = [r for r in rows if r["complete"]]
-    partial = [r for r in rows if not r["complete"]]
-    pending = [r for r in complete if not r["processed"]]
-    ready = bool(pending) and not partial
-    reason = "" if ready else ("tab trống" if not rows else "có hàng chưa điền đủ 3 cột" if partial else "tất cả đã xử lý")
-    return {"date": str(date), "tab": tab, "tab_exists": True, "rows": rows, "pending": len(pending), "ready": ready, "reason": reason}
+        return {"date": str(date), "tab": c["tab_name"], "tab_exists": False, "rows": [], "ready": False, "reason": f"không có tab '{c['tab_name']}'"}
+    st = state().get(str(date), {})
+    rows = []
+    for rec in parse_plan(body):
+        if parse_date(rec["date"], date.year) != (date.day, date.month) or not (rec["code"] or rec["sample"]):
+            continue
+        rec["variants"] = variants_of(rec, c["default_variants"])
+        rec["request_clean"] = clean_request(rec["request"])
+        rec["ready"] = bool(rec["code"] and rec["sample"])
+        rec["processed"] = st.get(rec["code"], {}).get("status") == "done"
+        rec["folder_name"] = safe(f"{rec['code']}_{rec['name']}" if rec["name"] else rec["code"])
+        rows.append(rec)
+    pending = [r for r in rows if r["ready"] and not r["processed"]]
+    waiting = [r["code"] for r in rows if not r["ready"] and not r["processed"]]
+    reason = "" if pending else ("hôm nay không có hàng nào" if not rows else "chưa hàng nào có Sample" if not any(r["ready"] for r in rows) else "tất cả hàng đã có Sample đều xử lý xong")
+    return {"date": str(date), "tab": c["tab_name"], "tab_exists": True, "rows": rows, "pending": len(pending), "waiting_no_sample": waiting, "ready": bool(pending), "reason": reason}
+
+
+def find_sample(name, c):
+    d = c.get("sample_dir")
+    if d and os.path.isdir(d):
+        want = name.lower()
+        for root, _, files in os.walk(d):
+            for f in files:
+                if f.lower() == want or os.path.splitext(f)[0].lower() == os.path.splitext(want)[0]:
+                    return os.path.join(root, f)
+    return None
 
 
 def download(date):
     res = check(date)
-    if not res["tab_exists"] or not res.get("ready"):
+    if not res["tab_exists"] or not res["ready"]:
         return res
-    out_root = cfg()["out_root"]
+    c = cfg()
     res["downloads"] = []
     for r in res["rows"]:
-        if not r["complete"] or r["processed"]:
+        if not r["ready"] or r["processed"]:
             continue
-        folder = os.path.join(out_root, str(date), re.sub(r'[\\/:*?"<>|]+', "_", r["name"]))
+        folder = os.path.join(c["out_root"], f"{date.day:02d}-{date.month:02d}", r["folder_name"])
         os.makedirs(folder, exist_ok=True)
         dest = os.path.join(folder, "source.mp4")
-        if not r["file_id"]:
-            res["downloads"].append({"name": r["name"], "ok": False, "error": "link không phải link file Drive (cần dạng drive.google.com/file/d/<ID>/view, không phải link thư mục)"})
-            continue
-        if not os.path.exists(dest) or os.path.getsize(dest) < 1000:
-            try:
-                url = f"https://drive.usercontent.google.com/download?id={r['file_id']}&export=download&confirm=t"
-                resp = get(url, timeout=300)
-                ctype = resp.headers.get("Content-Type", "")
-                if "html" in ctype:
-                    raise RuntimeError("Drive trả về trang web thay vì video: file chưa chia sẻ công khai hoặc quá lớn")
-                with open(dest, "wb") as f:
-                    while True:
-                        b = resp.read(1 << 20)
-                        if not b:
-                            break
-                        f.write(b)
-            except Exception as e:  # noqa: BLE001
-                if os.path.exists(dest):
-                    os.remove(dest)
-                res["downloads"].append({"name": r["name"], "ok": False, "error": str(e)[:200]})
-                continue
-        res["downloads"].append({"name": r["name"], "ok": True, "path": dest.replace("\\", "/"), "folder": folder.replace("\\", "/"), "request": r["request"], "variants": r["variants"], "key": r["key"]})
+        item = {"code": r["code"], "name": r["name"], "sample": r["sample"], "folder": folder.replace("\\", "/"), "request": r["request_clean"], "request_raw": r["request"],
+                "variants": r["variants"], "character": r["character"], "hook": r["hook"], "language": r["language"], "before": r["before"], "angle": r["angle"], "concept": r["concept"]}
+        if os.path.exists(dest) and os.path.getsize(dest) > 1000:
+            item.update(ok=True, path=dest.replace("\\", "/"))
+        else:
+            src = find_sample(r["sample"], c)
+            if src:
+                shutil.copy2(src, dest)
+                item.update(ok=True, path=dest.replace("\\", "/"), from_=src.replace("\\", "/"))
+            elif re.match(r"https?://", r["sample"]):
+                item.update(ok=False, error="Sample là URL (TikTok/Facebook...): chưa hỗ trợ tải tự động, cần file video")
+            else:
+                item.update(ok=False, error=f"không tìm thấy file '{r['sample']}' (cần cấu hình sample_dir hoặc sample_drive_folder)")
+        res["downloads"].append(item)
     return res
 
 
-def mark(date, name, status, note=""):
-    res = check(datetime.date.fromisoformat(date))
-    key = next((r["key"] for r in res["rows"] if r["name"] == name), None)
-    if not key:
-        raise SystemExit("Không thấy hàng tên: " + name)
+def mark(date, code, status, note=""):
     st = state()
-    st.setdefault(date, {})[key] = {"name": name, "status": status, "note": note, "at": datetime.datetime.now().isoformat(timespec="seconds")}
+    st.setdefault(date, {})[code] = {"status": status, "note": note, "at": datetime.datetime.now().isoformat(timespec="seconds")}
     save_state(st)
-    print(json.dumps({"ok": True, "key": key, "status": status}, ensure_ascii=False))
+    print(json.dumps({"ok": True, "code": code, "status": status}, ensure_ascii=False))
 
 
 def main():
