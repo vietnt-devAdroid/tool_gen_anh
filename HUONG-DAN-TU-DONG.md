@@ -28,3 +28,8 @@ Ngày order (ngày làm) | Mã order | Tên video | **Sample** (tên file video 
 - **Ảnh after mẫu** (1 ảnh) đặt ở `assets\after_samples\<Mã order>.png` hoặc `default.png` (hoặc `after_sample.png` cạnh video mẫu). Ảnh after của từng biến thể được tạo từ ảnh before theo kiểu ảnh mẫu đó.
 - Âm thanh: có nhạc -> lặp nhạc gốc hết video. Có lời nói -> viết lời mới bằng ngôn ngữ trong cột Ngôn ngữ, lồng tiếng, **không phụ đề**.
 - Chuyển cảnh nhanh, không để khoảng chết quá 1 giây; video có thể dài hơn gốc.
+
+## Video mẫu và ảnh after lấy từ chính Sheet
+- Ô **Sample** (vd `Z00126.mp4`) là chữ có **link Drive ẩn** phía sau; `daily.py` đọc link đó (qua file XLSX xuất của sheet) rồi tải về `D:\ketqua\<dd-mm>\<mã_tên>\source.mp4`. **Điều kiện: file trên Drive phải để "Bất kỳ ai có đường liên kết đều xem được"**; nếu không Drive đòi đăng nhập và tải sẽ báo lỗi rõ ràng. Sample là link TikTok/Facebook thì chưa tự tải được.
+- Cột **O "Ảnh after"**: dán link ảnh (link file Drive công khai hoặc link ảnh trực tiếp), hoặc `=IMAGE("link")`, hoặc ảnh thả nổi trên ô. `daily.py` tải thành `after_sample.<đuôi>` trong thư mục video. Ảnh chèn thẳng "trong ô" chưa đọc được.
+- Cột **Link hoàn thành** (T) của sheet là link thư mục Drive kết quả của từng hàng (hiện chưa dùng để tải lên).

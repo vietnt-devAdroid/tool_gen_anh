@@ -18,11 +18,13 @@ Cấu hình daily_config.json: sheet_url, tab_name, default_variants, out_root, 
 """
 import argparse, csv, datetime, io, json, os, re, shutil, sys, unicodedata, urllib.error, urllib.parse, urllib.request
 
+import sheetx
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(ROOT, "daily_config.json")
 STATE_PATH = os.path.join(ROOT, "userdata", "daily_state.json")
 UA = {"User-Agent": "Mozilla/5.0"}
-DEFAULT_CFG = {"sheet_url": "", "tab_name": "Plan test_AI Photo", "default_variants": 10, "out_root": "D:/ketqua", "sample_dir": "", "sample_drive_folder": "",
+DEFAULT_CFG = {"sheet_url": "", "tab_name": "Plan test_AI Photo", "tab_gid": "", "default_variants": 10, "out_root": "D:/ketqua", "sample_dir": "", "sample_drive_folder": "",
                "upload_url": "", "upload_token": "", "upload_folder_id": ""}
 # khoá logic -> các cụm từ (đã bỏ dấu, chữ thường) nhận diện tiêu đề cột
 COLS = {"date": ["ngay order"], "code": ["ma order"], "concept": ["concept"], "angle": ["angle"], "insight": ["insight"], "name": ["ten video"], "sample": ["sample"],
@@ -155,15 +157,56 @@ def check(date):
     return {"date": str(date), "tab": c["tab_name"], "tab_exists": True, "rows": rows, "pending": len(pending), "waiting_no_sample": waiting, "ready": bool(pending), "reason": reason}
 
 
-def find_sample(name, c):
-    d = c.get("sample_dir")
-    if d and os.path.isdir(d):
-        want = name.lower()
-        for root, _, files in os.walk(d):
-            for f in files:
-                if f.lower() == want or os.path.splitext(f)[0].lower() == os.path.splitext(want)[0]:
-                    return os.path.join(root, f)
+def drive_id(url):
+    for pat in (r"/file/d/([\w-]+)", r"[?&]id=([\w-]+)"):
+        m = re.search(pat, url or "")
+        if m:
+            return m.group(1)
     return None
+
+
+def fetch_url(url, dest_base):
+    """Tải file từ link Drive (file công khai) hoặc link ảnh/video trực tiếp; trả đường dẫn file (có đuôi theo loại nội dung)."""
+    fid = drive_id(url)
+    real = f"https://drive.usercontent.google.com/download?id={fid}&export=download&confirm=t" if fid else url
+    resp = get(real, timeout=300)
+    ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+    if "html" in ctype:
+        raise RuntimeError("Drive trả về trang web thay vì file: file chưa chia sẻ công khai (ai có link đều xem được) hoặc link sai")
+    ext = {"video/mp4": ".mp4", "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif", "video/quicktime": ".mov", "video/webm": ".webm"}.get(ctype)
+    if not ext:
+        ext = os.path.splitext(urllib.parse.urlparse(url).path)[1] or (".mp4" if "video" in ctype else ".bin")
+    dest = dest_base + ext
+    with open(dest, "wb") as f:
+        while True:
+            b = resp.read(1 << 20)
+            if not b:
+                break
+            f.write(b)
+    return dest
+
+
+def sheet_links(c):
+    """Link ẩn sau chữ trong ô (Sample...), công thức IMAGE()/HYPERLINK(), ảnh thả nổi (Ảnh after): đọc từ XLSX xuất của sheet. Trả (cells, images, header_row)."""
+    sid = sheet_id(c["sheet_url"])
+    url = f"https://docs.google.com/spreadsheets/d/{sid}/export?format=xlsx" + (f"&gid={c['tab_gid']}" if c.get("tab_gid") else "")
+    data = get(url, timeout=120).read()
+    cells, images = sheetx.load(data, None if c.get("tab_gid") else c["tab_name"])
+    header_row = next((int(re.sub(r"\D", "", k)) for k, v in cells.items() if norm(v["text"]) == "ma order"), 1)
+    return cells, images, header_row
+
+
+def row_of_code(cells, code_col, code, header_row):
+    """Số dòng trong XLSX của hàng có Mã order = code (tìm theo mã, không phụ thuộc lệch dòng giữa CSV và XLSX)."""
+    for n in range(header_row + 1, header_row + 1000):
+        v = cells.get(f"{sheetx.col_letter(code_col)}{n}")
+        if v and v["text"].strip() == code:
+            return n
+    return None
+
+
+def cell_ref(col_idx, row):
+    return f"{sheetx.col_letter(col_idx)}{row}"
 
 
 def download(date):
@@ -171,26 +214,69 @@ def download(date):
     if not res["tab_exists"] or not res["ready"]:
         return res
     c = cfg()
+    try:
+        cells, images, header_row = sheet_links(c)
+    except Exception as e:  # noqa: BLE001
+        cells, images, header_row = {}, {}, 1
+        res["warning"] = f"không đọc được link ẩn trong ô (xlsx): {e}"
+    head = [norm(x) for x in next(csv.reader(io.StringIO(fetch_tab(sheet_id(c["sheet_url"]), c["tab_name"]))))]
+    col = {k: next((i for i, h in enumerate(head) if any(p in h for p in pats)), None) for k, pats in COLS.items()}
     res["downloads"] = []
     for r in res["rows"]:
         if not r["ready"] or r["processed"]:
             continue
+        row_no = row_of_code(cells, col["code"], r["code"], header_row) or (header_row + r["row"] - 1)
         folder = os.path.join(c["out_root"], f"{date.day:02d}-{date.month:02d}", r["folder_name"])
         os.makedirs(folder, exist_ok=True)
         dest = os.path.join(folder, "source.mp4")
         item = {"code": r["code"], "name": r["name"], "sample": r["sample"], "folder": folder.replace("\\", "/"), "request": r["request_clean"], "request_raw": r["request"],
                 "variants": r["variants"], "character": r["character"], "hook": r["hook"], "language": r["language"], "before": r["before"], "angle": r["angle"], "concept": r["concept"]}
-        if os.path.exists(dest) and os.path.getsize(dest) > 1000:
-            item.update(ok=True, path=dest.replace("\\", "/"))
-        else:
-            src = find_sample(r["sample"], c)
-            if src:
-                shutil.copy2(src, dest)
-                item.update(ok=True, path=dest.replace("\\", "/"), from_=src.replace("\\", "/"))
-            elif re.match(r"https?://", r["sample"]):
-                item.update(ok=False, error="Sample là URL (TikTok/Facebook...): chưa hỗ trợ tải tự động, cần file video")
+        # --- video mẫu: file có sẵn -> thư mục máy (sample_dir) -> link Drive ẩn sau ô Sample
+        try:
+            if os.path.exists(dest) and os.path.getsize(dest) > 1000:
+                item.update(ok=True, path=dest.replace("\\", "/"))
             else:
-                item.update(ok=False, error=f"không tìm thấy file '{r['sample']}' (cần cấu hình sample_dir hoặc sample_drive_folder)")
+                local = None
+                d = c.get("sample_dir")
+                if d and os.path.isdir(d):
+                    for root, _, files in os.walk(d):
+                        for f in files:
+                            if f.lower() == r["sample"].lower():
+                                local = os.path.join(root, f)
+                if local:
+                    shutil.copy2(local, dest)
+                    item.update(ok=True, path=dest.replace("\\", "/"), from_=local.replace("\\", "/"))
+                else:
+                    link = sheetx.find_url(cells.get(cell_ref(col["sample"], row_no))) if col.get("sample") is not None else ""
+                    if not link:
+                        raise RuntimeError(f"ô Sample '{r['sample']}' không có link (cần link Drive hoặc cấu hình sample_dir)")
+                    if not drive_id(link):
+                        raise RuntimeError(f"Sample là link ngoài Drive ({link[:60]}): chưa hỗ trợ tải tự động, cần file video trên Drive")
+                    p = fetch_url(link, os.path.join(folder, "source"))
+                    if p != dest:
+                        shutil.move(p, dest)
+                    item.update(ok=True, path=dest.replace("\\", "/"), sample_link=link)
+        except Exception as e:  # noqa: BLE001
+            item.update(ok=False, error=str(e)[:200])
+        # --- ảnh AFTER mẫu: cột "Ảnh after" (link ẩn / URL / =IMAGE() / ảnh thả nổi trên ô)
+        item["after_sample"] = None
+        if col.get("after") is not None:
+            ref = cell_ref(col["after"], row_no)
+            try:
+                img = images.get((sheetx.col_letter(col["after"]), row_no))
+                if img:
+                    p = os.path.join(folder, "after_sample" + img[1])
+                    open(p, "wb").write(img[0])
+                    item["after_sample"] = p.replace("\\", "/")
+                else:
+                    link = sheetx.find_url(cells.get(ref))
+                    if link:
+                        item["after_sample"] = fetch_url(link, os.path.join(folder, "after_sample")).replace("\\", "/")
+                        item["after_link"] = link
+                    elif r["after"]:
+                        item["after_note"] = f"ô Ảnh after có chữ '{r['after'][:40]}' nhưng không có link/ảnh đọc được"
+            except Exception as e:  # noqa: BLE001
+                item["after_error"] = str(e)[:200]
         res["downloads"].append(item)
     return res
 
