@@ -1,0 +1,9 @@
+# môi trường / dữ liệu riêng (tài khoản, cookie, khoá API, chat, media, log)
+.venv/
+userdata/
+bin/
+__pycache__/
+*.pyc
+daily_config.json
+*.tmp
+.env
