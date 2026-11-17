@@ -205,6 +205,28 @@ def voice(lines, dur, work, voice_name, rate="+8%"):
     return out, timing
 
 
+_SEP_LOCK = threading.Lock()   # chỉ một luồng tách nhạc cùng lúc (mô hình tốn RAM); các luồng khác chờ rồi dùng bản cache
+
+
+def tail_with_music(src, from_t, vwav, dur, work):
+    """Đoạn đuôi có giọng lồng tiếng MỚI nhưng GIỮ NHẠC NỀN gốc: tách nhạc nền khỏi giọng gốc (Demucs, cache cạnh video), lấy đoạn từ from_t, trộn dưới giọng mới (nhạc tự hạ khi có giọng).
+    Trả đường dẫn wav; không có nhạc nền hoặc tách lỗi thì trả chính vwav."""
+    try:
+        import separate
+        with _SEP_LOCK:
+            r = separate.separate(src)
+    except Exception as e:  # noqa: BLE001
+        print("không tách được nhạc nền:", str(e)[:150], flush=True)
+        return vwav
+    if not r.get("has_music"):
+        return vwav
+    out = os.path.join(work, "tail_mix.wav")
+    fc = ("[0:a]aresample=44100,aformat=channel_layouts=stereo,volume=0.85[m];[1:a]aresample=44100,aformat=channel_layouts=stereo,asplit=2[v1][v2];"
+          "[m][v1]sidechaincompress=threshold=0.02:ratio=6:attack=15:release=350[md];[md][v2]amix=inputs=2:normalize=0:duration=longest,alimiter=limit=0.95[a]")
+    run([FF, "-y", "-loglevel", "error", "-ss", f"{from_t}", "-i", r["accompaniment"], "-i", vwav, "-filter_complex", fc, "-map", "[a]", "-t", f"{dur:.3f}", "-ar", "44100", "-ac", "2", out])
+    return out
+
+
 def concat(parts, audio_src, out, workdir):
     lst = os.path.join(workdir, "list.txt")
     open(lst, "w", encoding="utf-8").write("".join("file '" + p.replace("\\", "/") + "'\n" for p in parts))
@@ -354,7 +376,8 @@ def build77(src, heroes, imgs, photo, work, out):
     # đoạn giới thiệu app của người khác -> mẫu upload của bạn: ảnh nhân vật vào khung, rồi hiện 3 ảnh kết quả (3 tranh đầu của video)
     upload_scene(photo, dur, W, H, work, P("tut.mp4"), t_in=3.0, results=imgs[:3], t_res=[6.4, 8.4, 10.4], caps=timing)
     run([FF, "-y", "-loglevel", "error", "-i", src, "-t", "8.4", "-vn", "-ar", "44100", "-ac", "2", P("a1.wav")])
-    run([FF, "-y", "-loglevel", "error", "-i", P("a1.wav"), "-i", vwav, "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1[a]", "-map", "[a]", "-c:a", "aac", "-b:a", "128k", P("audio.m4a")])
+    vwav = tail_with_music(src, 8.4, vwav, dur, work)
+    run([FF, "-y", "-loglevel", "error", "-i", P("a1.wav"), "-i", vwav, "-filter_complex", "[0:a]aresample=44100,aformat=channel_layouts=stereo[x];[1:a]aresample=44100,aformat=channel_layouts=stereo[y];[x][y]concat=n=2:v=0:a=1[a]", "-map", "[a]", "-c:a", "aac", "-b:a", "128k", P("audio.m4a")])
     concat([P("hero.mp4"), P("tut.mp4")], P("audio.m4a"), out, work)
 
 
@@ -513,7 +536,8 @@ def build104(src, pairs, work, out):
     # thay đoạn giới thiệu app của người khác bằng mẫu "Upload your photo" của bạn: ảnh vào khung rồi hiện 2 ảnh hoạt hình kết quả
     upload_scene(pairs[0][0], dur, W, H, work, P("tut.mp4"), t_in=2.8, results=[c0, c1], t_res=[4.9, 7.0], caps=timing, full_results=True)
     run([FF, "-y", "-loglevel", "error", "-i", src, "-t", "5.9", "-vn", "-ar", "44100", "-ac", "2", P("a1.wav")])
-    run([FF, "-y", "-loglevel", "error", "-i", P("a1.wav"), "-i", vwav, "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1[a]", "-map", "[a]", "-c:a", "aac", "-b:a", "128k", P("audio.m4a")])
+    vwav = tail_with_music(src, 5.9, vwav, dur, work)
+    run([FF, "-y", "-loglevel", "error", "-i", P("a1.wav"), "-i", vwav, "-filter_complex", "[0:a]aresample=44100,aformat=channel_layouts=stereo[x];[1:a]aresample=44100,aformat=channel_layouts=stereo[y];[x][y]concat=n=2:v=0:a=1[a]", "-map", "[a]", "-c:a", "aac", "-b:a", "128k", P("audio.m4a")])
     concat([P("hero_cap.mp4"), P("tut.mp4")], P("audio.m4a"), out, work)
 
 

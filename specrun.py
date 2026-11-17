@@ -18,7 +18,7 @@ Spec (JSON):
         # Tự kéo dài nếu quá ngắn; video có thể dài hơn gốc.
   "audio": "loop"                               # mặc định: LẶP lại nhạc/âm thanh gốc cho hết video (giữ nhạc gốc) | "silent"
   "revoice": {"name": "pt-BR-FranciscaNeural", "rate": "+8%", "lines": [[0.2, "Câu mới"], [4.6, "..."]]}
-        # video gốc có LỜI NÓI: chỉ lồng tiếng mới bằng ngôn ngữ đích (thời điểm tính trên cả video, gồm đoạn flow), KHÔNG phụ đề, mất nhạc nền gốc.
+        # video gốc có LỜI NÓI: lồng tiếng mới bằng ngôn ngữ đích (thời điểm tính trên cả video, gồm đoạn flow), KHÔNG phụ đề; GIỮ nhạc nền gốc (tách bằng Demucs, lặp hết video, tự hạ khi có giọng).
   "assets": {"after_sample": "D:/.../after.png"}   # ảnh có sẵn dùng làm tham chiếu: item "ref": ["before", "after_sample"]
   "variants": [ {"stages": [ [ {"key": "before", "prompt": "..."} ],
                              [ {"key": "after", "prompt": "...", "ref": ["before", "after_sample"]} ] ]} ]   # stage sau dùng ảnh stage trước (và assets) làm tham chiếu
@@ -47,19 +47,43 @@ def has_audio(path):
     return "Audio:" in r.stderr.decode("utf-8", "replace")
 
 
+_STEM_LOCK = threading.Lock()
+
+
+def music_stem(src):
+    """Nhạc nền đã tách khỏi giọng nói của video mẫu (cache cạnh video). None nếu không có nhạc nền hoặc tách không được."""
+    with _STEM_LOCK:   # nhiều biến thể chạy song song: chỉ tách một lần
+        try:
+            import separate
+            r = separate.separate(src)
+        except Exception as e:  # noqa: BLE001
+            print("không tách được nhạc nền:", str(e)[:200], flush=True)
+            return None
+    return r["accompaniment"] if r.get("has_music") else None
+
+
 def build_audio(spec, src, total, work):
-    """Âm thanh cho cả video (dài đúng 'total' giây). Có `revoice` (video gốc có lời nói): chỉ lồng tiếng mới, KHÔNG phụ đề, mất nhạc nền gốc.
-    Không có thì LẶP LẠI âm thanh/nhạc gốc cho hết video (mặc định, audio="loop"); audio="silent" thì không tiếng."""
+    """Âm thanh cho cả video (dài đúng 'total' giây).
+    - Có `revoice` (video gốc có lời nói): lồng tiếng mới, KHÔNG phụ đề. GIỮ NHẠC NỀN gốc: tách nhạc nền khỏi giọng gốc (Demucs), lặp cho hết video, tự hạ nhỏ khi có giọng mới.
+      Không tách được hoặc video gốc không có nhạc nền thì chỉ có giọng mới.
+    - Không có `revoice`: LẶP LẠI âm thanh/nhạc gốc cho hết video (mặc định, audio="loop"); audio="silent" thì không tiếng."""
     out = os.path.join(work, "audio.m4a")
     rv = spec.get("revoice")
+    fade = max(0.0, total - 0.6)
     if rv:
         vw, _ = P.voice([(t, txt) for t, txt in rv["lines"] if t < total], total, work, rv["name"], rate=rv.get("rate", "+8%"))
-        P.run([P.FF, "-y", "-loglevel", "error", "-i", vw, "-c:a", "aac", "-b:a", "128k", out])
+        music = music_stem(src) if rv.get("keep_music", True) else None
+        if music:
+            fc = ("[0:a]aresample=44100,aformat=channel_layouts=stereo,volume=0.85[m];[1:a]aresample=44100,aformat=channel_layouts=stereo,asplit=2[v1][v2];"
+                  "[m][v1]sidechaincompress=threshold=0.02:ratio=6:attack=15:release=350[md];[md][v2]amix=inputs=2:normalize=0:duration=longest,"
+                  f"alimiter=limit=0.95,atrim=0:{total:.3f},afade=t=out:st={fade:.3f}:d=0.6[a]")
+            P.run([P.FF, "-y", "-loglevel", "error", "-stream_loop", "-1", "-i", music, "-i", vw, "-filter_complex", fc, "-map", "[a]", "-c:a", "aac", "-b:a", "160k", "-t", f"{total:.3f}", out])
+        else:
+            P.run([P.FF, "-y", "-loglevel", "error", "-i", vw, "-c:a", "aac", "-b:a", "128k", out])
         return out
     if spec.get("audio", "loop") == "silent" or not has_audio(src):
         P.run([P.FF, "-y", "-loglevel", "error", "-f", "lavfi", "-t", f"{total:.3f}", "-i", "anullsrc=r=44100:cl=stereo", "-c:a", "aac", "-b:a", "64k", out])
         return out
-    fade = max(0.0, total - 0.6)
     P.run([P.FF, "-y", "-loglevel", "error", "-stream_loop", "-1", "-i", src, "-vn", "-t", f"{total:.3f}", "-ar", "44100", "-ac", "2", "-af", f"afade=t=out:st={fade:.3f}:d=0.6",
            "-c:a", "aac", "-b:a", "128k", out])
     return out
