@@ -17,7 +17,7 @@ for _d in (DATA, MEDIA, UPLOADS):
     os.makedirs(_d, exist_ok=True)
 
 DEFAULTS = {"api_url": os.environ.get("LUO_API_URL", "http://127.0.0.1:18610"), "api_key": os.environ.get("MUSE2API_KEY", ""),
-            "parallel": 3, "retries": 2, "timeout": 900, "review_claude": False, "raw_prompt": False, "export_dir": ""}
+            "parallel": 3, "retries": 2, "timeout": 900, "review_claude": False, "raw_prompt": False, "export_dir": "", "safe_mode": True}
 LOCK = threading.RLock()
 REV = {"n": 0}
 CHATS = {}       # id -> chat
@@ -101,6 +101,24 @@ def settings():
 
 
 # ------------------------------------------------------------------ gọi LUO-API
+SAFETY = (" All people shown are fictional adults (18+), fully and modestly dressed in complete everyday or formal clothing (no nudity, no underwear or swimwear, no lingerie, no exposed chest), "
+          "non-sexual, non-violent. They must not resemble any real person, celebrity, politician or public figure. No brand logos or trademarks.")
+BAD = re.compile(r"\b(?:nude|naked|topless|nsfw|erotic|sexy|sexual|lingerie|underwear|bikini|swimsuit|swimwear|cleavage|shirtless|bare[- ]chested|undress\w*|porn\w*|fetish|gore|bloody|"
+                 r"celebrit\w*|famous (?:actor|actress|singer|person|model)|look(?:s|ing)? like|lookalike|look-alike|resembl\w+ (?:the )?(?:actor|actress|singer|president|star))\b", re.I)
+
+
+class PolicyError(RuntimeError):
+    """Prompt vi phạm quy tắc an toàn: không thử lại."""
+
+
+def guard(text):
+    """Chặn prompt có từ khoá khoả thân / người nổi tiếng / bạo lực; thêm câu quy tắc cố định vào cuối khi bật safe_mode."""
+    m = BAD.search(text or "")
+    if m:
+        raise PolicyError(f"Prompt bị chặn vì chứa '{m.group(0)}' (quy tắc: không khoả thân, không người nổi tiếng, không bạo lực). Hãy sửa prompt.")
+    return text if (not SETTINGS.get("safe_mode", True) or SAFETY.strip() in text) else text.rstrip() + SAFETY
+
+
 class ApiError(RuntimeError):
     def __init__(self, msg, account=""):
         super().__init__(msg)
@@ -217,7 +235,7 @@ def run_video(m, chat, ev):
     imgs = [file_ref(f) for f in m["files"] if f["type"] == "image"]
     vids = [file_ref(f) for f in m["files"] if f["type"] == "video"]
     auds = [file_ref(f) for f in m["files"] if f["type"] == "audio"]
-    body = {"prompt": m["text"], "aspect_ratio": m["aspect"], "timeout": int(s["timeout"]), "raw_prompt": bool(s.get("raw_prompt"))}
+    body = {"prompt": guard(m["text"]), "aspect_ratio": m["aspect"], "timeout": int(s["timeout"]), "raw_prompt": bool(s.get("raw_prompt"))}
     if m.get("duration"):
         body["duration"] = int(m["duration"])
     if imgs:
@@ -242,7 +260,7 @@ def run_video(m, chat, ev):
 def run_image(m, chat, ev):
     s = settings()
     imgs = [file_ref(f) for f in m["files"] if f["type"] == "image"]
-    body = {"prompt": m["text"], "aspect_ratio": m["aspect"], "async": True, "timeout": min(int(s["timeout"]), 600), "raw_prompt": bool(s.get("raw_prompt"))}
+    body = {"prompt": guard(m["text"]), "aspect_ratio": m["aspect"], "async": True, "timeout": min(int(s["timeout"]), 600), "raw_prompt": bool(s.get("raw_prompt"))}
     if imgs:
         body["reference_images"] = imgs
     acc = m.get("pin_account") or chat.get("account")
@@ -329,7 +347,9 @@ def execute(mid):
         acc = getattr(e, "account", "") or m.get("account_id", "")
         m["error"] = str(e)
         log(m, "Lỗi: " + str(e))
-        if m["attempts"] <= int(settings()["retries"]) and not ev.is_set() and m["kind"] != "chat":
+        if isinstance(e, PolicyError):
+            m["status"] = "error"
+        elif m["attempts"] <= int(settings()["retries"]) and not ev.is_set() and m["kind"] != "chat":
             if acc:
                 m["avoid"] = list({*(m.get("avoid") or []), acc})
             m["status"] = "queued"

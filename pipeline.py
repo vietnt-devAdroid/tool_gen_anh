@@ -372,11 +372,11 @@ def v84(i):
              "on a narrow apartment balcony with laundry hanging on lines", "on a path in a local neighbourhood park", "in front of a small street-food stall at a market",
              "at a school gate with parked scooters", "leaning on the doorway of a neighbourhood bakery", "in a cosy living room next to a sofa", "on a small-town street corner with a corner shop"]
     who, place = WOMEN[i % 10], PLACE[(i * 3 + 1) % 10]
-    base = {"key": "base", "text": f"Photorealistic vertical phone photo of {who}, standing relaxed {place}, wearing a plain white fitted crop top and light beige trousers, one hand resting on something nearby, gentle smile, natural daylight, "
+    base = {"key": "base", "text": f"Photorealistic vertical phone photo of {who}, standing relaxed {place}, wearing a plain white fitted T-shirt and light beige trousers, one hand resting on something nearby, gentle smile, natural daylight, "
                                     f"upper body to thigh visible, candid iPhone look, {LOOK}."}
     keep = "Keep the same woman, face, pose, framing, background and lighting identical. "
     edits = [{"key": "bride", "ref": "base", "name": "Bride", "text": f"Edit this exact photo: dress her as a bride in a white wedding gown with a long veil, holding a small bouquet of white flowers. {keep}{LOOK}."},
-             {"key": "preg", "ref": "base", "name": "Pregnant", "text": f"Edit this exact photo: she is visibly pregnant with a large round baby bump, wearing the same white crop top. {keep}{LOOK}."},
+             {"key": "preg", "ref": "base", "name": "Pregnant", "text": f"Edit this exact photo: she is visibly pregnant with a large round baby bump, wearing the same white T-shirt. {keep}{LOOK}."},
              {"key": "child", "ref": "base", "name": "Have a child", "text": f"Edit this exact photo: she holds a cheerful toddler in pastel clothes on her hip. {keep}{LOOK}."},
              {"key": "old", "ref": "base", "name": "Old Age", "text": f"Edit this exact photo: age her to about 80 years old with long grey-white hair and gentle wrinkles, same clothes. {keep}{LOOK}."}]
     return {"base": base, "edits": edits, "labels": ["Bride", "Pregnant", "Have a child", "Old Age"]}
