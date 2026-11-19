@@ -1,5 +1,7 @@
 # LUO Chat
 
+> Cài đặt trên máy mới: xem `HUONG-DAN-CAI-DAT.md`. Quy tắc cho Claude xử lý video: `QUY-TAC-XU-LY-VIDEO.md` (đã nạp qua `CLAUDE.md`).
+
 Giao diện chat Muse 3 cột (danh sách chat | khung chat | media) có hàng đợi chạy ngầm. Dùng LUO-API làm nền, **không thay thế** LUO Studio.
 
 ## Chạy

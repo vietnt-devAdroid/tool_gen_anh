@@ -15,7 +15,9 @@ Spec (JSON):
   "tail": {"mode": "flow", "from": 5.9, "before": "before", "after": "after", "dur": 9.0, "t_in": 1.6, "load_dur": 1.6}
         # FLOW (khung upload của bạn): mẫu upload -> ảnh BEFORE vào khung -> LOADING -> ảnh AFTER toàn màn hình.
         # 'from' = giây bắt đầu đoạn app của người khác bị thay; bỏ 'from' = nối thêm sau phần đầu (video không có đoạn app khác).
-        # Tự kéo dài nếu quá ngắn; video có thể dài hơn gốc.
+        # Đoạn flow CỐ ĐỊNH 6.0s (tail.dur để đổi, tối thiểu 5.6s); video có thể dài/ngắn hơn gốc.
+  "total": 20.0                                 # TỔNG độ dài mong muốn (giây). Phần đầu = total - đoạn flow cố định (6s). Video chỉ có NHẠC: tự chọn số giây; video có LỜI: đặt gần độ dài gốc.
+  clips cũng nhận {"each": {"keys": ["s0","s1",...], "trans": "wipeup", "d": 0.3}}: rải đều N ảnh biến đổi (N = số khoá) lên hết phần đầu -> chọn N để mỗi ảnh ~1.2-2.5s.
   "audio": "loop"                               # mặc định: LẶP lại nhạc/âm thanh gốc cho hết video (giữ nhạc gốc) | "silent"
   "revoice": {"name": "pt-BR-FranciscaNeural", "rate": "+8%", "lines": [[0.2, "Câu mới"], [4.6, "..."]]}
         # video gốc có LỜI NÓI: lồng tiếng mới bằng ngôn ngữ đích (thời điểm tính trên cả video, gồm đoạn flow), KHÔNG phụ đề; GIỮ nhạc nền gốc (tách bằng Demucs, lặp hết video, tự hạ khi có giọng).
@@ -62,11 +64,32 @@ def music_stem(src):
     return r["accompaniment"] if r.get("has_music") else None
 
 
+def looped_audio(path, total, work, name="loop.wav", xf=0.5):
+    """Lặp âm thanh/nhạc 'path' cho đủ 'total' giây, các chỗ nối chồng mờ (crossfade) để không bị giật. Trả đường dẫn wav stereo 44.1k."""
+    out = os.path.join(work, name)
+    base = os.path.join(work, "loop_base.wav")
+    P.run([P.FF, "-y", "-loglevel", "error", "-i", path, "-vn", "-ar", "44100", "-ac", "2", base])
+    L = P.duration(base)
+    if L >= total or L <= xf * 3:
+        P.run([P.FF, "-y", "-loglevel", "error", "-i", base, "-t", f"{total:.3f}", out])
+        return out
+    n = int((total - xf) // (L - xf)) + 1   # mỗi lần nối mất xf giây
+    n = max(2, n if (L * n - xf * (n - 1)) >= total else n + 1)
+    inputs, fc, cur = [], [], "[0:a]"
+    for i in range(n):
+        inputs += ["-i", base]
+    for i in range(1, n):
+        fc.append(f"{cur}[{i}:a]acrossfade=d={xf}:c1=tri:c2=tri[x{i}]")
+        cur = f"[x{i}]"
+    P.run([P.FF, "-y", "-loglevel", "error", *inputs, "-filter_complex", ";".join(fc), "-map", cur, "-t", f"{total:.3f}", "-ar", "44100", "-ac", "2", out])
+    return out
+
+
 def build_audio(spec, src, total, work):
     """Âm thanh cho cả video (dài đúng 'total' giây).
-    - Có `revoice` (video gốc có lời nói): lồng tiếng mới, KHÔNG phụ đề. GIỮ NHẠC NỀN gốc: tách nhạc nền khỏi giọng gốc (Demucs), lặp cho hết video, tự hạ nhỏ khi có giọng mới.
+    - Có `revoice` (video gốc có lời nói): lồng tiếng mới, KHÔNG phụ đề. GIỮ NHẠC NỀN gốc: tách nhạc nền khỏi giọng gốc (Demucs), lặp (chồng mờ ở chỗ nối) cho hết video, tự hạ khi có giọng mới.
       Không tách được hoặc video gốc không có nhạc nền thì chỉ có giọng mới.
-    - Không có `revoice`: LẶP LẠI âm thanh/nhạc gốc cho hết video (mặc định, audio="loop"); audio="silent" thì không tiếng."""
+    - Không có `revoice` (video chỉ có nhạc): LẶP LẠI nhạc gốc (chồng mờ ở chỗ nối) cho hết video (audio="loop", mặc định); audio="silent" thì không tiếng."""
     out = os.path.join(work, "audio.m4a")
     rv = spec.get("revoice")
     fade = max(0.0, total - 0.6)
@@ -74,27 +97,44 @@ def build_audio(spec, src, total, work):
         vw, _ = P.voice([(t, txt) for t, txt in rv["lines"] if t < total], total, work, rv["name"], rate=rv.get("rate", "+8%"))
         music = music_stem(src) if rv.get("keep_music", True) else None
         if music:
+            mloop = looped_audio(music, total, work, "music_loop.wav")
             fc = ("[0:a]aresample=44100,aformat=channel_layouts=stereo,volume=0.85[m];[1:a]aresample=44100,aformat=channel_layouts=stereo,asplit=2[v1][v2];"
                   "[m][v1]sidechaincompress=threshold=0.02:ratio=6:attack=15:release=350[md];[md][v2]amix=inputs=2:normalize=0:duration=longest,"
                   f"alimiter=limit=0.95,atrim=0:{total:.3f},afade=t=out:st={fade:.3f}:d=0.6[a]")
-            P.run([P.FF, "-y", "-loglevel", "error", "-stream_loop", "-1", "-i", music, "-i", vw, "-filter_complex", fc, "-map", "[a]", "-c:a", "aac", "-b:a", "160k", "-t", f"{total:.3f}", out])
+            P.run([P.FF, "-y", "-loglevel", "error", "-i", mloop, "-i", vw, "-filter_complex", fc, "-map", "[a]", "-c:a", "aac", "-b:a", "160k", "-t", f"{total:.3f}", out])
         else:
             P.run([P.FF, "-y", "-loglevel", "error", "-i", vw, "-c:a", "aac", "-b:a", "128k", out])
         return out
     if spec.get("audio", "loop") == "silent" or not has_audio(src):
         P.run([P.FF, "-y", "-loglevel", "error", "-f", "lavfi", "-t", f"{total:.3f}", "-i", "anullsrc=r=44100:cl=stereo", "-c:a", "aac", "-b:a", "64k", out])
         return out
-    P.run([P.FF, "-y", "-loglevel", "error", "-stream_loop", "-1", "-i", src, "-vn", "-t", f"{total:.3f}", "-ar", "44100", "-ac", "2", "-af", f"afade=t=out:st={fade:.3f}:d=0.6",
-           "-c:a", "aac", "-b:a", "128k", out])
+    loop = looped_audio(src, total, work)
+    P.run([P.FF, "-y", "-loglevel", "error", "-i", loop, "-af", f"afade=t=out:st={fade:.3f}:d=0.6", "-c:a", "aac", "-b:a", "128k", "-t", f"{total:.3f}", out])
     return out
 
 
-def flow_duration(tail, orig, head_end):
-    """Độ dài đoạn upload: bằng đoạn gốc bị thay (nếu có), tối thiểu đủ cho upload + loading + giữ ảnh after >= 1.5s."""
-    t_in, load = tail.get("t_in", 1.6), tail.get("load_dur", 1.6)
-    need = t_in + 0.9 + load + 1.5
-    dur = tail.get("dur") or ((orig - head_end) if tail.get("from") is not None else 8.0)
-    return max(dur, need)
+FLOW_FIXED = 6.0   # đoạn khung upload -> loading -> ảnh after CỐ ĐỊNH 6.0s: 0-0.6 mẫu upload, 0.6-1.1 ảnh before vào + loading NGAY, 1.1-2.7 loading, 2.7-6.0 ảnh after (không có khoảng chờ)
+
+
+def flow_duration(tail, orig=None, head_end=None):
+    """Độ dài đoạn upload: CỐ ĐỊNH FLOW_FIXED (đổi bằng tail.dur), tối thiểu đủ cho upload + loading + giữ ảnh after >= 1.5s."""
+    t_in, load, gap = tail.get("t_in", 0.6), tail.get("load_dur", 1.6), tail.get("gap", 0.5)
+    return max(tail.get("dur") or FLOW_FIXED, t_in + gap + load + 1.5)
+
+
+def expand_clips(spec, clips, head_end, imgs, src, work):
+    """Mở {"each": {...}} thành N cảnh rải đều trên head_end; cảnh thường giữ nguyên."""
+    out = []
+    for c in clips:
+        if "each" in c:
+            e = c["each"]
+            keys = e["keys"]
+            n = len(keys)
+            for i, k in enumerate(keys):
+                out.append({"img": resolve(imgs, k, src, work), "t": round(i * head_end / n, 3), "trans": e.get("trans", "fade"), "d": e.get("d", 0.3)})
+        else:
+            out.append({"img": resolve(imgs, c["img"], src, work), "t": c.get("t", 0), "trans": c.get("trans", "fade"), "d": c.get("d", 0.3)})
+    return out
 
 
 def render_timeline(spec, V, imgs, src, work, out):
@@ -104,7 +144,9 @@ def render_timeline(spec, V, imgs, src, work, out):
     mode = tail.get("mode", "none")
     orig = P.duration(src)
     head_end = tail["from"] if (mode != "none" and tail.get("from") is not None) else orig
-    clips = [{"img": resolve(imgs, c["img"], src, work), "t": c.get("t", 0), "trans": c.get("trans", "fade"), "d": c.get("d", 0.3)} for c in spec["clips"]]
+    if mode == "flow" and spec.get("total"):   # tổng độ dài chọn trước: phần đầu = tổng - đoạn flow cố định
+        head_end = max(2.0, spec["total"] - flow_duration(tail))
+    clips = expand_clips(spec, spec["clips"], head_end, imgs, src, work)
     clips[0]["t"] = 0
     P.timeline(clips, W, H, head_end, PJ("hero.mp4"))
     hero = PJ("hero.mp4")
@@ -120,7 +162,7 @@ def render_timeline(spec, V, imgs, src, work, out):
         total = orig
     elif mode == "flow":   # thay đoạn app của người khác (hoặc nối thêm ở cuối): khung upload -> ảnh before -> loading -> ảnh after
         fd = flow_duration(tail, orig, head_end)
-        P.upload_flow(imgs[tail["before"]], imgs[tail["after"]], fd, W, H, work, PJ("flow.mp4"), t_in=tail.get("t_in", 1.6), load_dur=tail.get("load_dur", 1.6))
+        P.upload_flow(imgs[tail["before"]], imgs[tail["after"]], fd, W, H, work, PJ("flow.mp4"), t_in=tail.get("t_in", 0.6), load_dur=tail.get("load_dur", 1.6), gap=tail.get("gap", 0.5))
         parts.append(PJ("flow.mp4"))
         total = head_end + fd
     P.concat(parts, build_audio(spec, src, total, work), out, work)
@@ -138,7 +180,7 @@ def render_grid(spec, V, imgs, src, work, out):
     if tail.get("mode") == "flow":   # bỏ end card app khác, thay bằng khung upload
         hero = P.grid_video(src, pimgs, labels, reveals, spec["hero_end"], work, out, W, H, build_end=False, **kw)
         fd = flow_duration(tail, P.duration(src), spec["hero_end"])
-        P.upload_flow(imgs[tail["before"]], imgs[tail["after"]], fd, W, H, work, PJ("flow.mp4"), t_in=tail.get("t_in", 1.6), load_dur=tail.get("load_dur", 1.6))
+        P.upload_flow(imgs[tail["before"]], imgs[tail["after"]], fd, W, H, work, PJ("flow.mp4"), t_in=tail.get("t_in", 0.6), load_dur=tail.get("load_dur", 1.6), gap=tail.get("gap", 0.5))
         P.concat([hero, PJ("flow.mp4")], build_audio(spec, src, spec["hero_end"] + fd, work), out, work)
         return
     audio = build_audio(spec, src, P.duration(src), work) if spec.get("revoice") else None

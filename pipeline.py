@@ -487,7 +487,7 @@ VOICE104 = "en-US-JennyNeural"
 SCRIPT104 = [(0.3, "First, upload your photo."), (4.9, "Boom! Your cartoon is ready."), (8.0, "Share it!")]
 
 
-def upload_flow(before, after, dur, W, H, work, out, t_in=1.6, load_dur=1.6):
+def upload_flow(before, after, dur, W, H, work, out, t_in=0.6, load_dur=1.6, gap=0.5):
     """Khung upload của bạn: hiện mẫu -> ảnh BEFORE vào khung (bo góc) -> LOADING (làm tối + thanh tiến độ) -> ảnh AFTER toàn màn hình. Không có phụ đề.
     dur = tổng độ dài đoạn; trả về (t_after) = thời điểm ảnh after hiện."""
     from PIL import Image, ImageDraw
@@ -497,10 +497,10 @@ def upload_flow(before, after, dur, W, H, work, out, t_in=1.6, load_dur=1.6):
     ImageDraw.Draw(mask).rounded_rectangle((0, 0, w - 1, h - 1), radius=r, fill=255)
     mp = os.path.join(work, "mask.png")
     mask.save(mp)
-    t_load = t_in + 0.9
+    t_load = t_in + gap   # loading bắt đầu NGAY sau khi ảnh before vào khung (không chờ lâu)
     t_after = t_load + load_dur
     fc = [f"[0:v]scale={W}:{H},setsar=1,fps=30,format=yuv420p[bg]", "[1:v]format=gray[m0]",
-          f"[2:v]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},format=yuva420p[s0]", f"[s0][m0]alphamerge,fade=t=in:st=0:d=0.5:alpha=1,setpts=PTS+{t_in}/TB[ov0]",
+          f"[2:v]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},format=yuva420p[s0]", f"[s0][m0]alphamerge,fade=t=in:st=0:d=0.3:alpha=1,setpts=PTS+{t_in}/TB[ov0]",
           "[bg][ov0]overlay=" + f"{x}:{y}:eof_action=pass[o0]"]
     fonts = f"fontfile='{FONT}'"
     seg = 20
