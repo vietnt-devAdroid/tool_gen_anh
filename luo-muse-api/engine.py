@@ -951,7 +951,8 @@ class MuseEngine:
             p.send("Input.insertText", {"text": prompt})
             p.js(dom.fill_input(prompt))
         clicked = "no-button"
-        end = time.time() + 3.0
+        # video/ảnh đính kèm tải lên chậm (nhất là video lớn, mạng yếu) thì nút Gửi bị khoá: chờ lâu hơn thay vì báo lỗi sau 3 giây
+        end = time.time() + 45.0
         while time.time() < end:
             res = p.js(dom.CLICK_SEND)
             if res == "clicked":

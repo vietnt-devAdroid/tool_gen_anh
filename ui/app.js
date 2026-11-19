@@ -217,12 +217,32 @@ async function addFiles(list) {
 function renderFiles() {
   const el = $("#attach"); if (!el) return;
   el.innerHTML = S.files.map((f, i) => `<div class="fc">${fileChip(f).replace(/^<div class="fc">/, "").replace(/<\/div>$/, "")}<button class="x" data-rmf="${i}">${ico("x")}</button></div>`).join("");
+  const nv = S.files.filter(f => f.type === "video").length;
+  if (nv >= 2) el.innerHTML += `<label class="fc" style="cursor:pointer;gap:6px"><input type="checkbox" id="splitChk" ${S.split !== false ? "checked" : ""}> Mỗi video 1 cuộc trò chuyện (${nv} cuộc, chạy song song)</label>`;
   el.style.display = S.files.length ? "flex" : "none";
+  const ck = $("#splitChk"); if (ck) ck.onchange = () => { S.split = ck.checked; };
 }
 async function send(textOverride) {
   const ta = $("#prompt"), text = (textOverride ?? ta.value).trim(); if (!text) return;
   if (!S.chat) { const c = await api("/api/chats", { body: { account: $("#accSel").value } }); S.chatId = c.id; localStorage.setItem("lc.chat", c.id); S.chat = c; }
   const body = { text, kind: S.mode, aspect: S.aspect, duration: S.mode === "video" && S.duration ? +S.duration : null, files: S.files };
+  const vids = S.files.filter(f => f.type === "video");
+  if (textOverride === undefined && S.split !== false && vids.length >= 2) {
+    // nhiều video + một câu lệnh: mỗi video một cuộc trò chuyện riêng (tiêu đề = tên file), chạy song song theo hàng đợi
+    const others = S.files.filter(f => f.type !== "video"), acc = $("#accSel").value;
+    let first = null;
+    for (const v of vids) {
+      const c = await api("/api/chats", { body: { title: v.name.replace(/\.[^.]+$/, ""), account: acc } });
+      await api(`/api/chats/${c.id}/send`, { body: { ...body, files: [v, ...others] } });
+      first = first || c;
+    }
+    toast(`Đã tạo ${vids.length} cuộc trò chuyện, chạy song song`);
+    S.files = []; renderFiles();
+    ta.value = ""; ta.style.height = "";
+    if (first) { S.chatId = first.id; localStorage.setItem("lc.chat", first.id); }
+    await refresh(true);
+    return;
+  }
   await api(`/api/chats/${S.chat.id}/send`, { body });
   if (textOverride === undefined) { ta.value = ""; ta.style.height = ""; }
   await refresh(true);

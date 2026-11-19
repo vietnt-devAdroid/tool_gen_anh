@@ -55,12 +55,109 @@ def aspect_of(video):
     return ("9:16" if h > w * 1.2 else "16:9" if w > h * 1.2 else "1:1"), w, h
 
 
+
+def make_badge(photo, size, out_png, label="BEFORE"):
+    """Hình tròn ảnh before (viền trắng) + chữ BEFORE bên dưới, nền trong suốt."""
+    from PIL import Image, ImageDraw, ImageFont
+    im = Image.open(photo).convert("RGB")
+    w, h = im.size
+    side = min(w, int(h * 0.42)) if h >= w * 0.9 else min(w, h)   # ảnh toàn thân: cắt phần trên (đầu + vai) cho thấy rõ khuôn mặt
+    top = int(h * 0.03) if h >= w * 0.9 else (h - side) // 2
+    im = im.crop(((w - side) // 2, top, (w - side) // 2 + side, top + side)).resize((size, size), Image.LANCZOS)
+    S = 4
+    big = Image.new("RGBA", (size * S, size * S), (0, 0, 0, 0))
+    mask = Image.new("L", (size * S, size * S), 0)
+    ImageDraw.Draw(mask).ellipse((0, 0, size * S - 1, size * S - 1), fill=255)
+    big.paste(im.resize((size * S, size * S), Image.LANCZOS).convert("RGBA"), (0, 0), mask)
+    ImageDraw.Draw(big).ellipse((0, 0, size * S - 1, size * S - 1), outline=(255, 255, 255, 255), width=3 * S)
+    circ = big.resize((size, size), Image.LANCZOS)
+    try:
+        font = ImageFont.truetype("C:/Windows/Fonts/arialbd.ttf", max(14, size // 6))
+    except Exception:  # noqa: BLE001
+        font = ImageFont.load_default()
+    th = int(size * 0.28)
+    canvas = Image.new("RGBA", (size, size + th), (0, 0, 0, 0))
+    canvas.paste(circ, (0, 0), circ)
+    d = ImageDraw.Draw(canvas)
+    tw = d.textlength(label, font=font)
+    x, y = (size - tw) / 2, size + (th - font.size) / 2 - 2
+    d.text((x + 1, y + 1), label, font=font, fill=(0, 0, 0, 200))
+    d.text((x, y), label, font=font, fill=(255, 255, 255, 255))
+    canvas.save(out_png)
+    return canvas.size
+
+
+def pick_corner(video, bw, bh, W, H, margin):
+    """Chọn vị trí đặt hình tròn ít vướng nội dung nhất: so sánh độ chi tiết/chuyển động ở vài vị trí ứng viên trên các khung hình lấy mẫu."""
+    import glob, tempfile
+    import numpy as np
+    from PIL import Image
+    tmp = tempfile.mkdtemp()
+    d = P.duration(video)
+    P.run([P.FF, "-y", "-loglevel", "error", "-i", video, "-vf", f"fps=6/{max(d, 1):.2f},scale=160:-2", os.path.join(tmp, "f_%02d.png")])
+    frames = [np.asarray(Image.open(f).convert("L"), dtype=float) for f in sorted(glob.glob(os.path.join(tmp, "f_*.png")))]
+    shutil.rmtree(tmp, ignore_errors=True)
+    if not frames:
+        return W - bw - margin, margin
+    fh, fw = frames[0].shape
+    sc = fw / W
+    cands = {"top-right": (W - bw - margin, margin), "top-left": (margin, margin), "top-center": ((W - bw) // 2, margin),
+             "mid-right": (W - bw - margin, int(H * 0.30)), "mid-left": (margin, int(H * 0.30))}
+    best, best_s = None, 1e18
+    for name, (x, y) in cands.items():
+        x0, y0, x1, y1 = int(x * sc), int(y * sc), int((x + bw) * sc), int((y + bh) * sc)
+        boxes = [f[y0:y1, x0:x1] for f in frames]
+        detail = np.mean([b.std() for b in boxes])
+        motion = np.mean([np.abs(a[y0:y1, x0:x1] - b[y0:y1, x0:x1]).mean() for a, b in zip(frames, frames[1:])]) if len(frames) > 1 else 0
+        bias = 0 if name.startswith("top") else 8            # ưu tiên phía trên như mẫu
+        score = detail + 2 * motion + bias
+        if score < best_s:
+            best, best_s = (x, y), score
+    return best
+
+
+def add_before_circle(src, dst, photo, W, H):
+    size = int(min(W, H) * 0.30)
+    badge = dst + ".badge.png"
+    bw, bh = make_badge(photo, size, badge)
+    x, y = pick_corner(src, bw, bh, W, H, int(min(W, H) * 0.04))
+    P.run([P.FF, "-y", "-loglevel", "error", "-i", src, "-i", badge, "-filter_complex", f"[0:v][1:v]overlay={x}:{y}:format=auto[v]",
+           "-map", "[v]", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "17", "-pix_fmt", "yuv420p", "-c:a", "copy", "-shortest", dst])
+    os.remove(badge)
+    return dst
+
+
+BASE_PROMPT_CHAR = ("Recreate the attached reference video as closely as possible: the same scene, set, actions, camera framing and movement, pacing, timing, lighting, colours and style. "
+                    "Replace the main person with the fictional adult shown in the attached photo (same face, hair and overall look, fully and modestly dressed); everything else stays identical to the reference. "
+                    "Keep it natural and photorealistic. Do not copy the face of any real person from the reference.")
+WHOLE_PROMPT = "Gen lại video này y như video gốc đính kèm: giữ nguyên bố cục, cảnh, chuyển động máy quay, nhịp và phong cách. Nhân vật là người lớn hư cấu, ăn mặc đầy đủ; nếu video gốc có người thật thì không sao chép gương mặt."
+
+
+def process_whole(video, out_dir, a):
+    """Chế độ --whole: đẩy NGUYÊN video lên chat (một cuộc trò chuyện riêng) kèm lệnh 'gen lại video này'; Muse tạo tối đa 10 giây."""
+    name = os.path.splitext(os.path.basename(video))[0]
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
+    final = os.path.join(out_dir, f"{safe}_whole.mp4")
+    if os.path.exists(final):
+        return final
+    text = a.prompt or WHOLE_PROMPT
+    res = P.gen_images(name, [{"text": text, "files": [video]}], kind="video", duration=MUSE_DURATIONS[-1])
+    shutil.copyfile(res[0], final)
+    return final
+
+
 def process(video, out_dir, a):
+    if a.whole:
+        return process_whole(video, out_dir, a)
+    photo = None
+    if a.char:
+        import characters
+        photo = characters.pick(a.char, 1, a.offset)[0]
     name = os.path.splitext(os.path.basename(video))[0]
     safe = P.re.sub(r"[^\w.\-]+", "_", name) if hasattr(P, "re") else "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
     work = os.path.join(out_dir, "_work", safe)
     os.makedirs(work, exist_ok=True)
-    final = os.path.join(out_dir, f"{safe}_v2v.mp4")
+    final = os.path.join(out_dir, f"{safe}_v2v{'_before' if photo else ''}.mp4")
     if os.path.exists(final):
         return final
     dur = P.duration(video)
@@ -79,9 +176,13 @@ def process(video, out_dir, a):
         clip, frame = os.path.join(work, f"seg_{k:02d}.mp4"), os.path.join(work, f"seg_{k:02d}.png")
         P.run([P.FF, "-y", "-loglevel", "error", "-ss", f"{s}", "-to", f"{e}", "-i", video, "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "aac", clip])
         P.run([P.FF, "-y", "-loglevel", "error", "-ss", f"{s + 0.05}", "-i", video, "-frames:v", "1", frame])
-        items.append({"text": BASE_PROMPT + desc + (" Description of this scene: " + per_seg[k] if k < len(per_seg) else ""), "files": [frame, clip], "dur": muse_duration(e - s)})
+        if photo:
+            txt = (BASE_PROMPT_CHAR + desc + (" Description of this scene: " + per_seg[k] if k < len(per_seg) else ""))
+            items.append({"text": txt, "files": [clip, photo], "dur": muse_duration(e - s)})
+        else:
+            items.append({"text": BASE_PROMPT + desc + (" Description of this scene: " + per_seg[k] if k < len(per_seg) else ""), "files": [frame, clip], "dur": muse_duration(e - s)})
         clips_src.append((s, e, clip))
-    title = name   # MỖI VIDEO MỘT CUỘC TRÒ CHUYỆN: tiêu đề = tên file
+    title = name + (" - before" if photo else "")   # MỖI VIDEO MỘT CUỘC TRÒ CHUYỆN: tiêu đề = tên file
     if a.dry:
         gen = [c for *_, c in clips_src]
     else:
@@ -104,6 +205,10 @@ def process(video, out_dir, a):
         lst = os.path.join(work, "list.txt")
         open(lst, "w", encoding="utf-8").write("".join("file '" + p.replace("\\", "/") + "'\n" for p in parts))
         P.run([P.FF, "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", final])
+    if photo:
+        base = final[:-4] + "_nocircle.mp4"
+        os.replace(final, base)
+        add_before_circle(base, final, photo, W, H)
     if not a.dry:
         try:
             P.call("/api/attach", {"chat": P.chat_id(title), "file": final, "text": f"{name} (gen lại y như gốc)", "kind": "video", "by": "claude"})
@@ -127,11 +232,16 @@ def main():
     ap.add_argument("--audio", choices=["original", "muse"], default="original")
     ap.add_argument("--only", default="", help="chỉ chạy video có tên chứa chuỗi này (chạy thử 1 video trước)")
     ap.add_argument("--limit", type=int, default=0, help="chỉ chạy N video đầu tiên")
+    ap.add_argument("--whole", action="store_true", help="đẩy nguyên video lên chat kèm lệnh gen lại (không cắt cảnh, không ghép)")
+    ap.add_argument("--prompt", default="", help="lệnh dùng cho --whole (mặc định: gen lại video này y như gốc)")
+    ap.add_argument("--char", default="", help="mã nhân vật (V01..V18): đổi nhân vật chính thành nhân vật này và thêm hình tròn BEFORE xuyên suốt video")
+    ap.add_argument("--offset", type=int, default=0, help="số thứ tự ảnh đầu tiên trong thư mục nhân vật")
     ap.add_argument("--dry", action="store_true")
     a = ap.parse_args()
     vids = sorted(os.path.join(a.folder, f) for f in os.listdir(a.folder) if f.lower().endswith(VIDEO_EXT))
     if a.only:
-        vids = [v for v in vids if a.only.lower() in os.path.basename(v).lower()]
+        keys = [k.strip().lower() for k in a.only.split(",") if k.strip()]
+        vids = [v for v in vids if any(k in os.path.basename(v).lower() for k in keys)]
     if a.limit:
         vids = vids[:a.limit]
     if not vids:
