@@ -267,7 +267,7 @@ function renderChatView() {
     <div class="composer" id="comp"><div class="fl" id="attach" style="display:none;margin:0 0 6px"></div><textarea id="prompt" rows="2" placeholder="Mô tả ý tưởng ${S.mode === "chat" ? "bạn muốn hỏi" : S.mode === "image" ? "ảnh bạn muốn tạo" : "video bạn muốn tạo"}… (Enter để gửi, Shift+Enter xuống dòng)"></textarea>
     <div class="row"><div class="modes">${[["chat", "Chat AI"], ["image", "Tạo ảnh"], ["video", "Tạo video"]].map(([k, l]) => `<button data-mode="${k}" class="${S.mode === k ? "on" : ""}">${l}</button>`).join("")}</div>
     <select id="asp" title="Tỷ lệ"><option value="9:16">9:16 Dọc</option><option value="16:9">16:9 Ngang</option><option value="1:1">1:1 Vuông</option></select>
-    <select id="dur" title="Thời lượng" ${S.mode === "video" ? "" : 'style="display:none"'}><option value="">Thời lượng tự động</option><option>5</option><option>6</option><option>8</option><option>10</option></select>
+    <select id="dur" title="Thời lượng" ${S.mode === "video" ? "" : 'style="display:none"'}><option value="">Tự động (= độ dài video gốc)</option><option>5</option><option>6</option><option>8</option><option>10</option></select>
     <button class="ib" id="pImg" title="Đính kèm ảnh tham chiếu">${ico("clip")}</button><button class="ib" id="pVid" title="Đính kèm video tham chiếu">${ico("video")}</button><button class="ib" id="pBatch" title="Tạo hàng loạt (mỗi dòng một yêu cầu)">${ico("wand")}</button>
     <button class="send" id="sendBtn" title="Gửi">${ico("send")}</button></div></div></div>
   <div class="panel" id="mpanel"></div></div>

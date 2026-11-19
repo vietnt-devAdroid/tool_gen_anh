@@ -81,7 +81,8 @@ def make_badge(photo, size, out_png, label="BEFORE"):
     d = ImageDraw.Draw(canvas)
     tw = d.textlength(label, font=font)
     x, y = (size - tw) / 2, size + (th - font.size) / 2 - 2
-    d.text((x + 1, y + 1), label, font=font, fill=(0, 0, 0, 200))
+    for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2), (-2, -2), (2, 2), (-2, 2), (2, -2)):   # viền đen để chữ đọc được cả trên nền trắng
+        d.text((x + dx, y + dy), label, font=font, fill=(0, 0, 0, 255))
     d.text((x, y), label, font=font, fill=(255, 255, 255, 255))
     canvas.save(out_png)
     return canvas.size
@@ -129,7 +130,8 @@ def add_before_circle(src, dst, photo, W, H):
 
 BASE_PROMPT_CHAR = ("Recreate the attached reference video as closely as possible: the same scene, set, actions, camera framing and movement, pacing, timing, lighting, colours and style. "
                     "Replace the main person with the fictional adult shown in the attached photo (same face, hair and overall look, fully and modestly dressed); everything else stays identical to the reference. "
-                    "Keep it natural and photorealistic. Do not copy the face of any real person from the reference.")
+                    "The attached photo is ONLY an identity reference for the new main person: never show the photo itself, its white background or a cut-out of it, always keep the reference video's own setting and framing. "
+                    "Do not add any caption, label or text. Keep it natural and photorealistic. Do not copy the face of any real person from the reference.")
 WHOLE_PROMPT = "Gen lại video này y như video gốc đính kèm: giữ nguyên bố cục, cảnh, chuyển động máy quay, nhịp và phong cách. Nhân vật là người lớn hư cấu, ăn mặc đầy đủ; nếu video gốc có người thật thì không sao chép gương mặt."
 
 
@@ -146,75 +148,165 @@ def process_whole(video, out_dir, a):
     return final
 
 
-def process(video, out_dir, a):
-    if a.whole:
-        return process_whole(video, out_dir, a)
-    photo = None
-    if a.char:
-        import characters
-        photo = characters.pick(a.char, 1, a.offset)[0]
+def whole_char_prompt(seconds):
+    return ("gen tôi 1 video tương tự như video đính kèm, thay đổi nhân vật chính thành người trong ảnh đính kèm (chỉ lấy khuôn mặt, kiểu tóc và dáng vẻ từ ảnh, "
+            "tuyệt đối không hiện ảnh đó hay nền trắng của nó; nhân vật là người lớn hư cấu, ăn mặc đầy đủ), giữ nguyên cảnh gốc: cùng bối cảnh, bố cục, chuyển động máy quay, "
+            f"mọi chuyển động đúng thứ tự và nhịp, một mạch liền không giật, khuôn mặt nhất quán ở mọi khung hình, và giữ nguyên thời lượng video ({seconds:.1f} giây). Không thêm chữ hay nhãn nào.")
+
+
+def process_whole_char(video, out_dir, a):
+    """--whole --char: KHÔNG cắt cảnh. Gửi Muse NGUYÊN video (phần giữ lại) + ảnh nhân vật, lệnh 'đổi nhân vật, giữ cảnh gốc, giữ nguyên thời lượng'.
+    Video > 10s: Muse tự tạo nhiều clip rồi nối; API (wait_final) đợi Muse xong hẳn và lấy video cuối. Mỗi yêu cầu có thể mất ~6 phút."""
+    import characters
     name = os.path.splitext(os.path.basename(video))[0]
-    safe = P.re.sub(r"[^\w.\-]+", "_", name) if hasattr(P, "re") else "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
     work = os.path.join(out_dir, "_work", safe)
     os.makedirs(work, exist_ok=True)
-    final = os.path.join(out_dir, f"{safe}_v2v{'_before' if photo else ''}.mp4")
-    if os.path.exists(final):
-        return final
+    nvar = max(1, a.variants)
+    photos = characters.pick(a.char, nvar, a.offset)
+    dur = P.duration(video)
+    asp, W, H = aspect_of(video)
+    keep, sidej = None, os.path.splitext(video)[0] + ".json"
+    if os.path.exists(sidej):
+        import json
+        keep = json.load(open(sidej, encoding="utf-8")).get("keep_segments")
+    total = segments(video, dur, a.seg, a.min_seg)[:keep][-1][1] if keep else dur   # bỏ phần giới thiệu app
+    ref = os.path.join(work, "ref.mp4")
+    P.run([P.FF, "-y", "-loglevel", "error", "-i", video, "-t", f"{total:.3f}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "aac", ref])
+    title = name + " - nguyên video" + (" " + a.tag if a.tag else "")   # --tag: tạo cuộc trò chuyện mới, không dùng lại kết quả cũ
+    finals = [os.path.join(out_dir, f"{safe}_whole_before_{v + 1:02d}.mp4") for v in range(nvar)]
+    todo = [v for v in range(nvar) if not os.path.exists(finals[v])]
+    gen = {}
+    if a.dry:
+        for v in todo:
+            gen[v] = ref
+    else:
+        txt = whole_char_prompt(total)
+        res = P.gen_images(title, [{"text": txt, "files": [photos[v], ref], "extra": {"wait_final": True}} for v in todo], kind="video", duration=None)
+        gen = dict(zip(todo, res))
+    for v in todo:
+        base = finals[v][:-4] + "_nocircle.mp4"
+        gl = P.duration(gen[v])
+        L = min(total, gl)
+        P.run([P.FF, "-y", "-loglevel", "error", "-i", gen[v], "-i", video, "-map", "0:v", "-map", "1:a:0?", "-vf", P.fit(W, H) + ",fps=30",
+               "-c:v", "libx264", "-preset", "veryfast", "-crf", "17", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-t", f"{L:.3f}", "-movflags", "+faststart", base])
+        add_before_circle(base, finals[v], photos[v], W, H)
+        os.remove(base)
+        if not a.dry:
+            try:
+                P.call("/api/attach", {"chat": P.chat_id(title), "file": finals[v], "text": f"{name} - biến thể {v + 1}", "kind": "video", "by": "claude"})
+            except Exception as e:  # noqa: BLE001
+                print("chưa đưa vào LUO Chat được:", str(e)[:100], flush=True)
+        print(f"biến thể xong {finals[v]} (Muse {gl:.1f}s / gốc giữ lại {total:.1f}s)", flush=True)
+    return finals[-1]
+
+
+def process(video, out_dir, a):
+    if a.whole and a.char:
+        return process_whole_char(video, out_dir, a)
+    if a.whole:
+        return process_whole(video, out_dir, a)
+    name = os.path.splitext(os.path.basename(video))[0]
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
+    work = os.path.join(out_dir, "_work", safe)
+    os.makedirs(work, exist_ok=True)
+    nvar = max(1, a.variants)
+    photos = [None] * nvar
+    if a.char:
+        import characters
+        photos = characters.pick(a.char, nvar, a.offset)   # mỗi biến thể một nhân vật (ảnh) khác nhau trong thư mục mã
     dur = P.duration(video)
     asp, W, H = aspect_of(video)
     segs = segments(video, dur, a.seg, a.min_seg)
-    desc, per_seg = "", []
+    desc, per_seg, keep = "", [], None
     side = os.path.splitext(video)[0] + ".txt"
     if os.path.exists(side):
         desc = " Detailed description of the reference video: " + open(side, encoding="utf-8").read().strip()
-    sidej = os.path.splitext(video)[0] + ".json"   # {"segments": ["mô tả cảnh 1", "mô tả cảnh 2", ...]} (Claude viết, mỗi cảnh một mô tả, đúng thứ tự cảnh)
+    sidej = os.path.splitext(video)[0] + ".json"   # {"segments": [...mô tả từng cảnh...], "keep_segments": N}
     if os.path.exists(sidej):
         import json
-        per_seg = json.load(open(sidej, encoding="utf-8")).get("segments", [])
-    items, clips_src = [], []
+        j = json.load(open(sidej, encoding="utf-8"))
+        per_seg, keep = j.get("segments", []), j.get("keep_segments")
+    if keep:                                        # BỎ phần giới thiệu app (quay màn hình app, end card...): chỉ giữ N cảnh đầu
+        segs = segs[:keep]
+    total = segs[-1][1]                             # độ dài phần giữ lại
+    clips_src = []
     for k, (s, e) in enumerate(segs):
         clip, frame = os.path.join(work, f"seg_{k:02d}.mp4"), os.path.join(work, f"seg_{k:02d}.png")
-        P.run([P.FF, "-y", "-loglevel", "error", "-ss", f"{s}", "-to", f"{e}", "-i", video, "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "aac", clip])
+        if not os.path.exists(clip):
+            P.run([P.FF, "-y", "-loglevel", "error", "-ss", f"{s}", "-to", f"{e}", "-i", video, "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "aac", clip])
         P.run([P.FF, "-y", "-loglevel", "error", "-ss", f"{s + 0.05}", "-i", video, "-frames:v", "1", frame])
-        if photo:
-            txt = (BASE_PROMPT_CHAR + desc + (" Description of this scene: " + per_seg[k] if k < len(per_seg) else ""))
-            items.append({"text": txt, "files": [clip, photo], "dur": muse_duration(e - s)})
-        else:
-            items.append({"text": BASE_PROMPT + desc + (" Description of this scene: " + per_seg[k] if k < len(per_seg) else ""), "files": [frame, clip], "dur": muse_duration(e - s)})
-        clips_src.append((s, e, clip))
-    title = name + (" - before" if photo else "")   # MỖI VIDEO MỘT CUỘC TRÒ CHUYỆN: tiêu đề = tên file
+        clips_src.append((s, e, clip, frame))
+    title = name + (" - before" if a.char else "")   # MỖI VIDEO MỘT CUỘC TRÒ CHUYỆN: tiêu đề = tên file
+    tag = "_before" if a.char else ""
+    finals = [os.path.join(out_dir, f"{safe}_v2v{tag}" + (f"_{v + 1:02d}" if nvar > 1 else "") + ".mp4") for v in range(nvar)]
+    todo = [v for v in range(nvar) if not os.path.exists(finals[v])]
+    # mọi cảnh của mọi biến thể gom lại gửi một lượt (cùng độ dài -> chạy song song tối đa)
+    reqs = []
+    for v in todo:
+        for k, (s, e, clip, frame) in enumerate(clips_src):
+            sc = (" Description of this scene: " + per_seg[k]) if k < len(per_seg) else ""
+            if photos[v]:
+                reqs.append((v, k, {"text": BASE_PROMPT_CHAR + desc + sc, "files": [photos[v], clip]}, muse_duration(e - s)))
+            else:
+                reqs.append((v, k, {"text": BASE_PROMPT + desc + sc, "files": [frame, clip]}, muse_duration(e - s)))
+    gen = {}
     if a.dry:
-        gen = [c for *_, c in clips_src]
+        for v, k, _, _ in reqs:
+            gen[(v, k)] = clips_src[k][2]
     else:
-        gen = [None] * len(items)
         by_dur = {}
-        for n, it in enumerate(items):
-            by_dur.setdefault(it["dur"], []).append(n)
-        for d, idx in by_dur.items():
-            res = P.gen_images(title, [{"text": items[n]["text"], "files": items[n]["files"]} for n in idx], kind="video", duration=d)
-            for n, pth in zip(idx, res):
-                gen[n] = pth
-    parts = []
-    for k, ((s, e, _), g) in enumerate(zip(clips_src, gen)):
-        part = os.path.join(work, f"part_{k:02d}.mp4")
-        P.run([P.FF, "-y", "-loglevel", "error", "-i", g, "-t", f"{e - s:.3f}", "-vf", P.fit(W, H), *P.ENC, part])
-        parts.append(part)
-    if a.audio == "original":
-        P.concat(parts, video, final, work)
-    else:
-        lst = os.path.join(work, "list.txt")
+        for r in reqs:
+            by_dur.setdefault(r[3], []).append(r)
+        ths = []
+
+        def run_group(d, rs):
+            res = P.gen_images(title, [r[2] for r in rs], kind="video", duration=d)
+            for r, pth in zip(rs, res):
+                gen[(r[0], r[1])] = pth
+        errs = []
+        for d, rs in by_dur.items():
+            t = threading.Thread(target=_safe, args=(run_group, errs, d, rs))
+            t.start(); ths.append(t)
+        for t in ths:
+            t.join()
+        if errs:
+            raise RuntimeError("; ".join(errs)[:300])
+    for v in todo:
+        wv = os.path.join(work, f"v{v + 1:02d}")
+        os.makedirs(wv, exist_ok=True)
+        parts = []
+        for k, (s, e, _, _) in enumerate(clips_src):
+            part = os.path.join(wv, f"part_{k:02d}.mp4")
+            P.run([P.FF, "-y", "-loglevel", "error", "-i", gen[(v, k)], "-t", f"{e - s:.3f}", "-vf", P.fit(W, H), *P.ENC, part])
+            parts.append(part)
+        lst = os.path.join(wv, "list.txt")
         open(lst, "w", encoding="utf-8").write("".join("file '" + p.replace("\\", "/") + "'\n" for p in parts))
-        P.run([P.FF, "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", final])
-    if photo:
-        base = final[:-4] + "_nocircle.mp4"
-        os.replace(final, base)
-        add_before_circle(base, final, photo, W, H)
-    if not a.dry:
-        try:
-            P.call("/api/attach", {"chat": P.chat_id(title), "file": final, "text": f"{name} (gen lại y như gốc)", "kind": "video", "by": "claude"})
-        except Exception as e:  # noqa: BLE001
-            print("chưa đưa vào LUO Chat được:", str(e)[:100], flush=True)
-    return final
+        joined = os.path.join(wv, "joined.mp4")
+        P.run([P.FF, "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", joined])
+        base = finals[v][:-4] + "_nocircle.mp4" if photos[v] else finals[v]
+        if a.audio == "original":   # giữ nhạc/âm thanh gốc, cắt đúng độ dài phần giữ lại
+            P.run([P.FF, "-y", "-loglevel", "error", "-i", joined, "-i", video, "-map", "0:v", "-map", "1:a:0?", "-vf", "tpad=stop_mode=clone:stop_duration=1",
+                   "-c:v", "libx264", "-preset", "veryfast", "-crf", "17", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-t", f"{total:.3f}", "-movflags", "+faststart", base])
+        else:
+            os.replace(joined, base)
+        if photos[v]:
+            add_before_circle(base, finals[v], photos[v], W, H)
+            os.remove(base)
+        if not a.dry:
+            try:
+                P.call("/api/attach", {"chat": P.chat_id(title), "file": finals[v], "text": f"{name} - biến thể {v + 1}", "kind": "video", "by": "claude"})
+            except Exception as e:  # noqa: BLE001
+                print("chưa đưa vào LUO Chat được:", str(e)[:100], flush=True)
+        print("biến thể xong", finals[v], flush=True)
+    return finals[-1]
+
+
+def _safe(fn, errs, *args):
+    try:
+        fn(*args)
+    except Exception as e:  # noqa: BLE001
+        errs.append(str(e))
 
 
 def main():
@@ -235,6 +327,8 @@ def main():
     ap.add_argument("--whole", action="store_true", help="đẩy nguyên video lên chat kèm lệnh gen lại (không cắt cảnh, không ghép)")
     ap.add_argument("--prompt", default="", help="lệnh dùng cho --whole (mặc định: gen lại video này y như gốc)")
     ap.add_argument("--char", default="", help="mã nhân vật (V01..V18): đổi nhân vật chính thành nhân vật này và thêm hình tròn BEFORE xuyên suốt video")
+    ap.add_argument("--tag", default="", help="hậu tố tiêu đề cuộc trò chuyện (đổi để chạy lại từ đầu, không dùng lại kết quả đã có)")
+    ap.add_argument("--variants", type=int, default=1, help="số biến thể mỗi video (mỗi biến thể một nhân vật khác trong thư mục mã --char)")
     ap.add_argument("--offset", type=int, default=0, help="số thứ tự ảnh đầu tiên trong thư mục nhân vật")
     ap.add_argument("--dry", action="store_true")
     a = ap.parse_args()

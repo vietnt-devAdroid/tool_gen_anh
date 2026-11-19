@@ -229,6 +229,17 @@ def file_ref(f):
     return f["path"]
 
 
+def video_seconds(path):
+    """Độ dài (giây) của một video, đọc bằng ffmpeg; None nếu không đọc được."""
+    try:
+        ff = ffmpeg()
+        r = subprocess.run([ff, "-hide_banner", "-i", path], capture_output=True, creationflags=0x08000000 if os.name == "nt" else 0)
+        mm = re.search(r"Duration: (\d+):(\d+):([\d.]+)", r.stderr.decode("utf-8", "replace"))
+        return int(mm[1]) * 3600 + int(mm[2]) * 60 + float(mm[3]) if mm else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 # ------------------------------------------------------------------ chạy việc
 def run_video(m, chat, ev):
     s = settings()
@@ -236,8 +247,18 @@ def run_video(m, chat, ev):
     vids = [file_ref(f) for f in m["files"] if f["type"] == "video"]
     auds = [file_ref(f) for f in m["files"] if f["type"] == "audio"]
     body = {"prompt": guard(m["text"]), "aspect_ratio": m["aspect"], "timeout": int(s["timeout"]), "raw_prompt": bool(s.get("raw_prompt"))}
-    if m.get("duration"):
+    ex = m.get("extra") or {}
+    if ex.get("wait_final"):    # Muse tự nối nhiều clip cho video > 10s: gửi lệnh nguyên văn, không ép thời lượng, đợi Muse xong rồi lấy video cuối
+        body["raw_prompt"], body["wait_final"] = True, True
+        if vids:
+            body["want_seconds"] = video_seconds(vids[0])
+    elif m.get("duration"):
         body["duration"] = int(m["duration"])
+    elif vids:   # "Thời lượng tự động": theo độ dài video gốc đính kèm (Muse chỉ nhận 5/6/8/10 giây, tối đa 10)
+        L = video_seconds(vids[0])
+        if L:
+            body["duration"] = next((d for d in (5, 6, 8, 10) if d >= L - 0.05), 10)
+            log(m, f"Thời lượng tự động: video gốc {L:.1f}s -> yêu cầu {body['duration']}s" + (" (Muse tối đa 10s)" if L > 10.05 else ""))
     if imgs:
         body["reference_images"] = imgs
     if vids:
@@ -771,7 +792,7 @@ def do_batch(b):
             it = {"text": it}
         files = shared + [import_path(x["path"] if isinstance(x, dict) else x) for x in (it.get("files") or [])]
         m = add_message(chat, it["text"], it.get("kind", d.get("kind", "video")), it.get("aspect", d.get("aspect", "9:16")),
-                        it.get("duration", d.get("duration")), files, by=b.get("by", "claude"), draft=draft)
+                        it.get("duration", d.get("duration")), files, by=b.get("by", "claude"), draft=draft, extra=it.get("extra") or d.get("extra"))
         ids.append(m["id"])
     return {"chat": chat["id"], "title": chat["title"], "added": len(ids), "draft": draft, "ids": ids}
 

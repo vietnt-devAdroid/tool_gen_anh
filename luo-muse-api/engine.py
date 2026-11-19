@@ -41,6 +41,10 @@ ESSENTIAL_COOKIES = ("hatch_sess", "hatch_native_auth_device")
 OPTIONAL_SESSION_COOKIES = ("hatch_gw", "hatch_vml")
 
 NEW_THREAD_URL = "https://muse.ai/thread/new"
+import threading as _threading
+CTX = _threading.local()   # CTX.wait_final=True: đợi Muse trả lời xong rồi lấy video CUỐI (Muse tự tạo nhiều clip rồi ghép khi video gốc > 10s)
+
+_dbg: dict = {}
 TERMINAL_STATUS = {"completed", "complete", "idle", "done", "failed", "error", "errored", "cancelled", "canceled",
                    "stopped", "interrupted"}
 QUOTA_TEXT_RE = re.compile(r"额度不足|积分不足|out of credits|usage limit|limit reached|token limit|24-hour limit|"
@@ -1211,6 +1215,8 @@ class MuseEngine:
         status = None
         last_any = t0
         seen_assistant = False
+        final_path, final_since = None, 0.0
+        log.info("【wait_final】vào vòng chờ thread=%s expect=%s wait_final=%s", thread[:8], expect, getattr(CTX, "wait_final", None))
         while True:
             elapsed = time.time() - t0
             running = status is not None and status not in TERMINAL_STATUS
@@ -1245,6 +1251,11 @@ class MuseEngine:
                     if m.get("kind") == expect and m.get("path") not in exclude:
                         cands.append((ev, m))
             now = time.time()
+            if getattr(CTX, "wait_final", False) and expect == "video":
+                sig = (status, tuple(c[1].get("path") for c in cands), (texts_dbg := [ev.get("text") or "" for ev in events if ev.get("role") == "assistant" and ev.get("text")])[-1:] and texts_dbg[-1][:60])
+                if sig != _dbg.get(thread):
+                    _dbg[thread] = sig
+                    log.info("【wait_final】%s t=%.0fs status=%s video=%d: %s", thread[:8], now - t0, status, len(cands), (texts_dbg[-1][:160] if texts_dbg else ""))
             if cands:
                 ev, m = cands[-1]
                 first_seen.setdefault(m["path"], now)
@@ -1252,7 +1263,17 @@ class MuseEngine:
                     timing.setdefault("media_seen", now)
                     timing.setdefault("muse_media_ms", ev.get("at"))
                 settle = 0.0 if expect == "video" else 1.5
-                if status in TERMINAL_STATUS or now - first_seen[m["path"]] >= settle:
+                if getattr(CTX, "wait_final", False) and expect == "video":
+                    # Muse có thể tạo clip 1, rồi clip nối tiếp và ghép: chỉ nhận khi đã xong hẳn và 15s không có video mới
+                    if status in TERMINAL_STATUS:
+                        if final_path != m["path"]:
+                            final_path, final_since = m["path"], now
+                        if now - final_since >= 15.0:
+                            m["event_at"] = ev.get("at")
+                            return m
+                    else:
+                        final_path, final_since = None, now
+                elif status in TERMINAL_STATUS or now - first_seen[m["path"]] >= settle:
                     m["event_at"] = ev.get("at")
                     return m
             if on_progress:
@@ -1341,6 +1362,8 @@ class MuseEngine:
         hard = timeout + min(300.0, timeout * 0.5)
         stable_src, stable_n = "", 0
         last_txt, txt_stable = "", 0
+        fin_src, fin_since, fin_logged = "", 0.0, ""
+        follow_ups = 0
         while True:
             elapsed = time.time() - t0
             st = {}
@@ -1369,7 +1392,42 @@ class MuseEngine:
             if att:
                 check = (att.get("vSrc") or (att.get("src") if (att.get("src") or "").endswith((".mp4", ".webm", ".mov")) else "")) \
                     if expect == "video" else att.get("src")
-                if check and check not in baseline_sources:
+                if check and check not in baseline_sources and getattr(CTX, "wait_final", False) and expect == "video":
+                    # đợi Muse xong hẳn (không còn nút dừng) và 15s không có video mới, rồi lấy video CUỐI (bản đã nối)
+                    if busy or check != fin_src:
+                        fin_src, fin_since = check, time.time()
+                        if check != fin_logged:
+                            fin_logged = check
+                            log.info("【wait_final-DOM】t=%.0fs thấy video (tổng %d), busy=%s", elapsed, len(match), busy)
+                    elif time.time() - fin_since >= 15.0 and (att.get("w") or 0) > 0:
+                        lt = (st.get("lastText") or "").strip()
+                        vdur = 0.0
+                        try:
+                            # đo CHÍNH video vừa nhận (nguồn `check`) bằng một phần tử <video> tạm, không đọc nhầm clip trung gian trên trang
+                            vdur = float(self.page.js(
+                                "new Promise(function(r){var v=document.createElement('video');v.preload='metadata';v.muted=true;"
+                                "v.onloadedmetadata=function(){r(v.duration||0)};v.onerror=function(){r(0)};setTimeout(function(){r(0)},10000);v.src=" + dom.q(check) + ";})",
+                                await_promise=True, timeout=20) or 0)
+                        except Exception:  # noqa: BLE001
+                            pass
+                        want = getattr(CTX, "want_seconds", None)
+                        short = bool(want) and 0 < vdur < float(want) - 1.5
+                        log.info("【wait_final-DOM】video cuối dài %.1fs, mong muốn %s, Muse nói: %s", vdur, want, lt[-100:])
+                        if follow_ups < 2 and (short or (not want and re.search(r"[?？]\s*$", lt))):
+                            # Muse dừng lại HỎI ("bạn muốn tôi thử lại bản đủ độ dài không?") thay vì tự làm: trả lời đồng ý để nó nối clip cho đủ thời lượng
+                            follow_ups += 1
+                            log.info("【wait_final-DOM】Muse hỏi lại (%s) -> trả lời 'làm đi' (lần %d)", lt[-90:], follow_ups)
+                            try:
+                                self._clear_attachments()
+                                self._send("Yes, please do it: make the full-length version I asked for (create more clips and join them so the total matches the reference duration) "
+                                           "and attach ONE final video in the chat. Do not ask me again.")
+                            except Exception as exc:  # noqa: BLE001
+                                log.warning("【wait_final-DOM】gửi tin trả lời lỗi: %s", exc)
+                            fin_src, fin_since = "", time.time()
+                            continue
+                        log.info("【wait_final-DOM】nhận video cuối sau %.0fs (tổng %d video)", elapsed, len(match))
+                        return att
+                elif check and check not in baseline_sources:
                     if (att.get("w") or 0) > 0 and (att.get("h") or 0) > 0:
                         return att
                     if check == stable_src:

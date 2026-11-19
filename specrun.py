@@ -257,30 +257,45 @@ def dummy_image(p):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=["run", "dry"])
-    ap.add_argument("spec")
-    ap.add_argument("--out", default=None)
+    ap.add_argument("spec", nargs="+", help="một hoặc nhiều file spec.json (nhiều video)")
+    ap.add_argument("--out", default=None, help="thư mục kết quả (nhiều spec: mỗi spec một thư mục con theo tên thư mục chứa spec)")
     ap.add_argument("--only", default="", help="chỉ chạy các biến thể này, ví dụ 1,3")
+    ap.add_argument("--overlap", type=int, default=1, help="số video chạy CHỒNG nhau (video sau đẩy ảnh lên Muse trong lúc video trước còn dựng/chờ): mặc định 1 = lần lượt")
     a = ap.parse_args()
     a.dry = a.mode == "dry"
-    spec = json.load(open(a.spec, encoding="utf-8"))
-    a.out = a.out or os.path.join(os.path.dirname(os.path.abspath(a.spec)), "out")
-    os.makedirs(a.out, exist_ok=True)
     only = {int(x) for x in a.only.split(",") if x.strip()}
-    errors, threads = [], []
+    errors = []
+    gate = threading.Semaphore(max(1, a.overlap))
+    multi = len(a.spec) > 1
 
-    def worker(i):
-        try:
-            print("xong", run_variant(spec, i, a), flush=True)
-        except Exception as e:  # noqa: BLE001
-            errors.append((i + 1, str(e)))
-            print("LỖI biến thể", i + 1, str(e)[:300], flush=True)
-    for i in range(len(spec["variants"])):
-        if only and (i + 1) not in only:
-            continue
-        t = threading.Thread(target=worker, args=(i,), daemon=True)
+    def run_spec(path):
+        with gate:
+            spec = json.load(open(path, encoding="utf-8"))
+            tag = os.path.basename(os.path.dirname(os.path.abspath(path))) or spec.get("id", "")
+            out = (os.path.join(a.out, tag) if (a.out and multi) else a.out) or os.path.join(os.path.dirname(os.path.abspath(path)), "out")
+            os.makedirs(out, exist_ok=True)
+            va = argparse.Namespace(**{**vars(a), "out": out})
+            ths = []
+
+            def worker(i):
+                try:
+                    print("xong", run_variant(spec, i, va), flush=True)
+                except Exception as e:  # noqa: BLE001
+                    errors.append((tag, i + 1, str(e)))
+                    print("LỖI", tag, "biến thể", i + 1, str(e)[:300], flush=True)
+            for i in range(len(spec["variants"])):
+                if only and (i + 1) not in only:
+                    continue
+                t = threading.Thread(target=worker, args=(i,), daemon=True)
+                t.start()
+                ths.append(t)
+            for t in ths:
+                t.join()
+            print(f"[video xong] {tag}", flush=True)
+    vts = [threading.Thread(target=run_spec, args=(p,), daemon=True) for p in a.spec]
+    for t in vts:
         t.start()
-        threads.append(t)
-    for t in threads:
+    for t in vts:
         t.join()
     print(f"Hoàn tất. Lỗi: {len(errors)}")
     for e in errors:

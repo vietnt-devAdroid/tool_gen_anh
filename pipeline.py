@@ -77,7 +77,7 @@ def _gen_images(title, items, tries=3, kind="image", duration=None):
     """items = [{text, files?}] -> [đường dẫn ảnh] theo đúng thứ tự (chờ xong; tự xếp hàng lại ảnh lỗi)."""
     cid = chat_id(title)
     r = call("/api/batch", {"chat": cid, "by": "claude", "defaults": {"kind": kind, "aspect": "9:16", "duration": duration},
-                            "items": [{"text": it["text"], "files": it.get("files") or []} for it in items]})
+                            "items": [{"text": it["text"], "files": it.get("files") or [], **({"extra": it["extra"]} if it.get("extra") else {})} for it in items]})
     ids, fail = r["ids"], {}
     for attempt in range(tries):
         while True:

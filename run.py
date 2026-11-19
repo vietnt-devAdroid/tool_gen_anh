@@ -124,6 +124,8 @@ def main():
     profiles = os.path.join(USER, "profiles")
     os.environ.setdefault("MUSE2API_PROFILE_ROOT", profiles)
     os.environ["MUSE2API_HOME"] = API_HOME
+    os.environ.setdefault("MUSE2API_ACCOUNT_PARALLEL", "6")   # số việc cùng lúc trên MỖI tài khoản (mặc định của API là 2)
+    os.environ.setdefault("MUSE2API_CONCURRENCY", "60")        # trần tổng số việc của mọi tài khoản
     os.environ["MUSE2API_ENV_FILE"] = os.path.join(API_HOME, ".env")
     os.environ["LUO_CHAT_DATA"] = CHAT_DATA
     reap_stale(profiles)

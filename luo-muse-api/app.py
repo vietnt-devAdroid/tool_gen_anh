@@ -574,6 +574,8 @@ class VideoRequest(BaseModel):
     reference_images: list[str] | None = None   # 多张参考图，按顺序（第 1 张在前）
     reference_videos: list[str] | None = None   # tham chiếu video (data URL / URL / đường dẫn), đính sau ảnh
     reference_audios: list[str] | None = None   # tham chiếu âm thanh mp3/wav/..., đính sau video
+    want_seconds: float | None = None           # độ dài mong muốn (giây): video Muse trả về ngắn hơn thì tự nhắn Muse làm bản đủ độ dài
+    wait_final: bool = False                    # True: đợi Muse trả lời xong rồi lấy video CUỐI (video > 10s: Muse tự nối nhiều clip)
     raw_prompt: bool = False                    # True: 原样发送 prompt，不套用内置模板
     session: str | None = Field(default=None, max_length=128)  # cùng session = cùng một chat/tab Muse
     pin: str | None = Field(default=None, max_length=128)       # cùng pin = cùng MỘT tài khoản Muse (vd. mọi cảnh của một video), không tự đổi tài khoản
@@ -1434,6 +1436,10 @@ async def create_video(req: VideoRequest, _=Depends(auth)):
 
     def worker():
         timing = {"t0": time.time()}
+        import engine as _engmod
+        _engmod.CTX.wait_final = bool(req.wait_final)
+        _engmod.CTX.want_seconds = req.want_seconds
+        log.info("【wait_final】worker đặt cờ=%s", _engmod.CTX.wait_final)
         def _on_acquired():
             qw, timing["t0"] = time.time() - timing["t0"], time.time()
             store.update_task(task["id"], status="processing", progress=15, queue_wait=round(qw, 2))
