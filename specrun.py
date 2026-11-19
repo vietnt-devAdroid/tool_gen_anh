@@ -23,6 +23,7 @@ Spec (JSON):
         # video gốc có LỜI NÓI: lồng tiếng mới bằng ngôn ngữ đích (thời điểm tính trên cả video, gồm đoạn flow), KHÔNG phụ đề; GIỮ nhạc nền gốc (tách bằng Demucs, lặp hết video, tự hạ khi có giọng).
   item stage có "kind": "video" (+ "duration": 5-10): tạo CLIP chuyển động bằng Muse từ ảnh "ref" (khung đầu); dùng đường dẫn .mp4 đó như ảnh trong clips và làm "after" của flow
         (loại IMAGE TO VIDEO: cả video chuyển động). Clip chậm/tốn hơn ảnh nhiều: giữ số clip tối thiểu.
+  item stage có "use": "<đường dẫn ảnh>": dùng thẳng ảnh có sẵn làm khoá đó (không tạo) - dùng cho ảnh nhân vật từ bộ nhân vật (xem characters.py): {"key": "before", "use": "D:/180 nhan vat Photo/V04_.../xxx.webp"}
   "assets": {"after_sample": "D:/.../after.png"}   # ảnh có sẵn dùng làm tham chiếu: item "ref": ["before", "after_sample"]
   "variants": [ {"stages": [ [ {"key": "before", "prompt": "..."} ],
                              [ {"key": "after", "prompt": "...", "ref": ["before", "after_sample"]} ] ]} ]   # stage sau dùng ảnh stage trước (và assets) làm tham chiếu
@@ -205,22 +206,27 @@ def run_variant(spec, i, args):
         return [] if not r else [pool(x) for x in (r if isinstance(r, list) else [r])]
     for stage in V["stages"]:
         paths = [None] * len(stage)
+        pre = {n: it["use"] for n, it in enumerate(stage) if it.get("use")}   # "use": đường dẫn ảnh CÓ SẴN (vd ảnh nhân vật từ bộ nhân vật) dùng thẳng, không tạo
         if args.dry:
             for n, it in enumerate(stage):
-                if it.get("kind") == "video":
+                if n in pre:
+                    paths[n] = pre[n]
+                elif it.get("kind") == "video":
                     paths[n] = os.path.join(work, f"dry_{it['key']}.mp4")
                     dummy_video(paths[n])
                 else:
                     paths[n] = os.path.join(work, f"dry_{it['key']}.png")
                     dummy_image(paths[n])
         else:
-            img_idx = [n for n, it in enumerate(stage) if it.get("kind") != "video"]
+            img_idx = [n for n, it in enumerate(stage) if it.get("kind") != "video" and n not in pre]
+            for n, u in pre.items():
+                paths[n] = u
             if img_idx:
                 for n, pth in zip(img_idx, P.gen_images(title, [{"text": stage[n]["prompt"], "files": files(stage[n])} for n in img_idx])):
                     paths[n] = pth
             by_dur = {}   # loại image-to-video: clip chuyển động do Muse tạo từ ảnh tham chiếu (khung đầu); gom theo độ dài
             for n, it in enumerate(stage):
-                if it.get("kind") == "video":
+                if it.get("kind") == "video" and n not in pre:
                     by_dur.setdefault(int(it.get("duration", 5)), []).append(n)
             for dur, idx in by_dur.items():
                 for n, pth in zip(idx, P.gen_images(f"{spec['id']} - clip chuyển động", [{"text": stage[n]["prompt"], "files": files(stage[n])} for n in idx], kind="video", duration=dur)):

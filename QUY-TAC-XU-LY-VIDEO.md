@@ -67,6 +67,13 @@ Khi người dùng đưa video/thư mục video để xử lý mà chưa nói r�
 - Ảnh đã tạo được tái sử dụng theo (prompt + ảnh tham chiếu), nên chạy lại không tốn thêm.
 - Bàn tay/chuyển động thật (ví dụ tay đang vẽ): chỉ dùng clip ngắn Muse tạo từ ảnh tĩnh khi video gốc có chuyển động đó.
 
+## 5b. BỘ NHÂN VẬT và MÃ NHÂN VẬT (loại image to image)
+- Bộ nhân vật nằm ở `D:\180 nhan vat Photo` (đổi bằng `characters_dir` trong `daily_config.json`): **18 thư mục = 18 mã** (V01..V18), mỗi thư mục **10 ảnh nhân vật toàn thân nền trắng do Muse tạo**. Tên thư mục: `V04_Au-My_Nu_20-35` = mã + khu vực (Au-My / Latin / India) + giới tính (Nam / Nu) + nhóm tuổi (20-35 / 40-60 / 5-6).
+- **Sau mỗi video người dùng cho MÃ nhân vật** (ví dụ "V04") ứng với tên thư mục. Dùng các ảnh của thư mục đó làm **ảnh BEFORE** (danh tính + trang phục) cho các biến thể: nhân vật 1, 2, ..., 10 luân phiên; nếu số biến thể > 10 thì dùng lại nhân vật nhưng đổi dáng/bối cảnh. Chưa có mã mà task cần nhân vật thì **hỏi người dùng mã**.
+- Công cụ: `python characters.py list | show V04 | pick V04 20`. Trong spec dùng ảnh có sẵn bằng `{"key": "before", "use": "<đường dẫn ảnh>"}` (không tạo lại); rồi ảnh AFTER tạo từ ảnh before đó: `ref: ["before", "after_sample"]` (giữ danh tính của before, theo kiểu biến đổi của after mẫu, không sao chép gương mặt người trong ảnh mẫu). Mô tả người cho prompt lấy từ `describe` của mã (ví dụ "Latin American female, aged 20-35").
+- **Nhóm tuổi 5-6 (V03, V06, V09, V12, V15, V18) là TRẺ EM: KHÔNG dùng làm chủ thể** (quy tắc nội dung); nếu người dùng đưa các mã này thì báo và đề nghị mã người lớn tương ứng (cùng khu vực/giới tính, nhóm 20-35 hoặc 40-60).
+- Các ảnh nhân vật là ảnh AI hư cấu của người dùng, vẫn áp dụng: ăn mặc đầy đủ, không biến thành người nổi tiếng, không sao chép gương mặt từ ảnh mẫu.
+
 ## 6. Cách chạy an toàn (bài học)
 - Làm **tuần tự từng video**; không chạy song song nhiều spec (LUO Chat quá tải, lỗi "connection refused").
 - Muse chạy tối đa ~6 việc song song (số tài khoản x 2). Có nhiều biến thể thì mất nhiều giờ: chạy nền, chờ xong, không bỏ giữa chừng.
