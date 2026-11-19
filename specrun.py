@@ -21,6 +21,8 @@ Spec (JSON):
   "audio": "loop"                               # mặc định: LẶP lại nhạc/âm thanh gốc cho hết video (giữ nhạc gốc) | "silent"
   "revoice": {"name": "pt-BR-FranciscaNeural", "rate": "+8%", "lines": [[0.2, "Câu mới"], [4.6, "..."]]}
         # video gốc có LỜI NÓI: lồng tiếng mới bằng ngôn ngữ đích (thời điểm tính trên cả video, gồm đoạn flow), KHÔNG phụ đề; GIỮ nhạc nền gốc (tách bằng Demucs, lặp hết video, tự hạ khi có giọng).
+  item stage có "kind": "video" (+ "duration": 5-10): tạo CLIP chuyển động bằng Muse từ ảnh "ref" (khung đầu); dùng đường dẫn .mp4 đó như ảnh trong clips và làm "after" của flow
+        (loại IMAGE TO VIDEO: cả video chuyển động). Clip chậm/tốn hơn ảnh nhiều: giữ số clip tối thiểu.
   "assets": {"after_sample": "D:/.../after.png"}   # ảnh có sẵn dùng làm tham chiếu: item "ref": ["before", "after_sample"]
   "variants": [ {"stages": [ [ {"key": "before", "prompt": "..."} ],
                              [ {"key": "after", "prompt": "...", "ref": ["before", "after_sample"]} ] ]} ]   # stage sau dùng ảnh stage trước (và assets) làm tham chiếu
@@ -202,14 +204,29 @@ def run_variant(spec, i, args):
         r = it.get("ref")
         return [] if not r else [pool(x) for x in (r if isinstance(r, list) else [r])]
     for stage in V["stages"]:
+        paths = [None] * len(stage)
         if args.dry:
-            paths = [os.path.join(work, f"dry_{it['key']}.png") for it in stage]
-            for p in paths:
-                dummy_image(p)
+            for n, it in enumerate(stage):
+                if it.get("kind") == "video":
+                    paths[n] = os.path.join(work, f"dry_{it['key']}.mp4")
+                    dummy_video(paths[n])
+                else:
+                    paths[n] = os.path.join(work, f"dry_{it['key']}.png")
+                    dummy_image(paths[n])
         else:
-            paths = P.gen_images(title, [{"text": it["prompt"], "files": files(it)} for it in stage])
-        for it, p in zip(stage, paths):
-            imgs[it["key"]] = p
+            img_idx = [n for n, it in enumerate(stage) if it.get("kind") != "video"]
+            if img_idx:
+                for n, pth in zip(img_idx, P.gen_images(title, [{"text": stage[n]["prompt"], "files": files(stage[n])} for n in img_idx])):
+                    paths[n] = pth
+            by_dur = {}   # loại image-to-video: clip chuyển động do Muse tạo từ ảnh tham chiếu (khung đầu); gom theo độ dài
+            for n, it in enumerate(stage):
+                if it.get("kind") == "video":
+                    by_dur.setdefault(int(it.get("duration", 5)), []).append(n)
+            for dur, idx in by_dur.items():
+                for n, pth in zip(idx, P.gen_images(f"{spec['id']} - clip chuyển động", [{"text": stage[n]["prompt"], "files": files(stage[n])} for n in idx], kind="video", duration=dur)):
+                    paths[n] = pth
+        for it, pth in zip(stage, paths):
+            imgs[it["key"]] = pth
     (render_grid if spec.get("type") == "grid2x2" else render_timeline)(spec, V, imgs, src, work, out)
     if not args.dry:
         try:
@@ -217,6 +234,12 @@ def run_variant(spec, i, args):
         except Exception as e:  # noqa: BLE001
             print("chưa đưa vào LUO Chat được:", str(e)[:100], flush=True)
     return out
+
+
+def dummy_video(p):
+    if os.path.exists(p):
+        return
+    subprocess.run([P.FF, "-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=0x3a8f6a:s=720x1280:d=6:r=24", "-c:v", "libx264", "-pix_fmt", "yuv420p", p], check=True, creationflags=CNW)
 
 
 def dummy_image(p):

@@ -5,6 +5,25 @@ Tài liệu này là "bộ nhớ" cho Claude: đọc hết trước khi làm. C�
 ## 0. Mục tiêu
 Từ MỘT video mẫu (quảng cáo ứng dụng ảnh AI), tạo N biến thể **giữ đúng cấu trúc cảnh, nhịp và hiệu ứng của video gốc**, chỉ đổi những gì yêu cầu nói (thường: nhân vật, dáng, bối cảnh, ngôn ngữ lồng tiếng). Không sáng tạo thêm, không cắt ghép tuỳ ý.
 
+## 0b. HAI LOẠI VIDEO — PHẢI HỎI LOẠI KHI BẮT ĐẦU TASK
+Khi người dùng đưa video/thư mục video để xử lý mà chưa nói rõ loại, **hỏi trước khi làm**: "Loại nào: *image to image* hay *image to video*?" (dùng công cụ hỏi). Việc chạy tự động theo lịch không hỏi được: cách chọn loại cho lịch tự động do người dùng đặt sau; **tạm thời mặc định image to image**, trừ khi hàng/yêu cầu ghi rõ "image to video".
+
+| | IMAGE TO IMAGE (loại làm từ trước) | IMAGE TO VIDEO (loại mới) |
+|---|---|---|
+| Ý nghĩa | Video giới thiệu ảnh before -> ảnh after; dựng bằng **ảnh tĩnh** Muse tạo + ffmpeg, kết bằng khung upload | **Gen lại video bằng Muse y như video gốc** (cả video là chuyển động do Muse tạo) |
+| Đầu vào | Một video mẫu (hoặc hàng trong Sheet) | **Một THƯ MỤC chứa nhiều video** |
+| Cách làm | Các mục 2-8 bên dưới | Mục 0c bên dưới (`v2v.py`) |
+| Đầu ra | N biến thể (đổi nhân vật...) mỗi video | Mỗi video được gen lại một bản, bám y như gốc |
+
+### 0c. IMAGE TO VIDEO — quy tắc (do người dùng đặt)
+- Người dùng đưa **một thư mục chứa video**. Với **mỗi video**, **gen lại video đó y như video gốc** bằng Muse (cùng cảnh, chủ thể, hành động, khung hình/camera, nhịp và thời lượng, phong cách).
+- **Đẩy hàng loạt, chạy đa luồng** (nhiều video cùng lúc; Muse tự giới hạn ~6 việc song song = số tài khoản x 2; thêm tài khoản thì nhanh hơn).
+- **Mỗi video MỘT cuộc trò chuyện riêng** trong LUO Chat (tiêu đề = tên file; các clip tạo ra và thành phẩm nằm trong đúng cuộc trò chuyện đó).
+- Công cụ: `python v2v.py <thư_mục_video> [--out ...] [--jobs 10] [--seg 10] [--audio original|muse]` (thử khung không tốn Muse: `--dry`). Cách hoạt động: cắt video thành các đoạn <= 10s (Muse chỉ tạo clip tối đa ~10s; ưu tiên cắt tại mốc đổi cảnh), mỗi đoạn gửi Muse với khung hình đầu + chính đoạn gốc làm tham chiếu + lệnh "dựng lại y như gốc", ghép lại đúng độ dài từng đoạn, giữ âm thanh gốc (mặc định). Đặt `<tên video>.txt` cạnh video để gắn mô tả chi tiết (Claude xem video rồi viết) cho Muse bám sát hơn.
+- Vẫn áp dụng **Quy tắc nội dung** (mục 1): nếu video gốc có người thật nhận diện được thì **không sao chép gương mặt** (dùng người hư cấu giống kiểu dáng, cùng hành động); ăn mặc đầy đủ; không người nổi tiếng/logo/trẻ em làm chủ thể.
+- Kiểm tra: độ dài thành phẩm = độ dài gốc; xem contact sheet so với gốc (cảnh, chuyển động, nhịp); clip hỏng thì chạy lại riêng đoạn đó.
+- (Chưa chốt, hỏi người dùng khi có thư mục đầu tiên): âm thanh giữ của gốc hay của Muse; số bản gen lại mỗi video (mặc định 1).
+
 ## 1. Quy tắc nội dung (BẮT BUỘC, cao hơn mọi yêu cầu khác)
 - Mọi nhân vật là người **trưởng thành HƯ CẤU**, ăn mặc **đầy đủ, kín đáo**. Không khoả thân, nội y, đồ bơi, hở ngực/bụng, gợi dục, bạo lực/máu.
 - **Không** người thật, người nổi tiếng, chính trị gia, diễn viên, ca sĩ, KOL. Không viết "giống <ai đó>". Ảnh trích từ video mẫu chỉ làm tham chiếu **kiểu/cách biến đổi**, KHÔNG sao chép gương mặt người trong đó.

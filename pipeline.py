@@ -512,10 +512,11 @@ def upload_flow(before, after, dur, W, H, work, out, t_in=0.6, load_dur=1.6, gap
         ts = t_load + i * load_dur / seg
         parts.append(f"drawbox=x={bx0 + i * bw // seg}:y={y}+{int(h * 0.5)}:w={bw // seg + 1}:h=8:color=white:t=fill:enable='between(t,{ts:.3f},{t_after})'")
     fc.append("[o0]" + ",".join(parts) + "[o1]")
-    fc.append(f"[3:v]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},format=yuva420p,fade=t=in:st=0:d=0.3:alpha=1,setpts=PTS+{t_after}/TB[ov1]")
+    fc.append(f"[3:v]fps=30,scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},format=yuva420p,tpad=stop_mode=clone:stop_duration=4,fade=t=in:st=0:d=0.3:alpha=1,setpts=PTS+{t_after}/TB[ov1]")
     fc.append("[o1][ov1]overlay=0:0:eof_action=pass,format=yuv420p[v]")
     run([FF, "-y", "-loglevel", "error", "-loop", "1", "-t", f"{dur:.3f}", "-i", UPLOAD_TPL, "-loop", "1", "-t", f"{dur:.3f}", "-i", mp, "-loop", "1", "-t", f"{dur - t_in:.3f}", "-i", before,
-         "-loop", "1", "-t", f"{dur - t_after:.3f}", "-i", after, "-filter_complex", ";".join(fc), "-map", "[v]", "-t", f"{dur:.3f}", *ENC, out])
+         *(["-t", f"{dur - t_after:.3f}"] if str(after).lower().endswith((".mp4", ".mov", ".webm")) else ["-loop", "1", "-t", f"{dur - t_after:.3f}"]), "-i", after,
+         "-filter_complex", ";".join(fc), "-map", "[v]", "-t", f"{dur:.3f}", *ENC, out])
     return t_after
 
 
