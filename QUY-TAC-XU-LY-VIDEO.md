@@ -137,4 +137,4 @@ Xem `HUONG-DAN-TU-DONG.md`: `daily.py check/download/done/fail`, đọc tab kế
 - **Âm thanh**: `audio: orig_head` (giữ âm gốc phần đầu), `orig_keep` (chỉ thay lời gốc bằng giọng mới trên nền nhạc, giữ âm gốc sau mốc cắt). Nhạc bài hát gốc phải giữ nguyên, không thay nhạc khác.
 - **Nhịp**: transition nhanh như gốc, rút tổng thời lượng nếu cần; số ảnh theo sub (`plan_beats`); phụ đề từng chữ chỉ khi video mẫu có.
 - **Giao việc luồng phụ**: dùng Agent MỚI + brief ngắn trỏ `AGENT-BRIEF.md`, không fork (fork mang cả ngữ cảnh dài, rất tốn token). Lệnh như "chạy batch Z0175" gõ cho Claude, KHÔNG gõ vào khung chat của LUO Chat (sẽ bị gửi cho Muse làm prompt).
-- **Quy trình người dùng muốn**: phân tích -> spec -> dry -> MỘT bản mẫu để kiểm -> khi duyệt mới chạy 10 biến thể.
+- **BẮT BUỘC gen 1 video để kiểm trước, chốt rồi mới gen batch**: với MỌI video mới (và mỗi lần sửa nội dung lớn), chỉ chạy ĐÚNG MỘT biến thể (`--only 1`), gửi đường dẫn cho người dùng kiểm tra; KHÔNG tự chạy 10 biến thể. Chỉ chạy batch khi người dùng chốt rõ ("chạy batch X", "chạy 10 biến thể"). Quy trình: phân tích -> spec -> dry -> MỘT bản mẫu -> người dùng duyệt/sửa -> batch.
