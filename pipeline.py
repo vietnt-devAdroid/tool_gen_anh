@@ -154,6 +154,18 @@ def timeline(clips, w, h, total, out):
     for k in range(1, len(clips)):
         fc.append(f"[{cur}][v{k}]xfade=transition={clips[k]['trans']}:duration={clips[k]['d']}:offset={clips[k]['t']}[x{k}]")
         cur = f"x{k}"
+    # "edge": ảnh nhãn/logo TỰ THIẾT KẾ chạy dọc mép quét (như video mẫu có logo trượt theo đường chuyển cảnh); chỉ cho wipedown/wipeup
+    n = len(clips)
+    for k in range(1, len(clips)):
+        c = clips[k]
+        if not c.get("edge"):
+            continue
+        inputs += ["-loop", "1", "-t", f"{total:.3f}", "-i", c["edge"]]
+        t0, d = c["t"], c["d"]
+        y = f"(H-h)*0+(H*(t-{t0})/{d})-h/2" if "down" in c["trans"] else f"(H-H*(t-{t0})/{d})-h/2"
+        fc.append(f"[{n}:v]format=rgba[e{k}];[{cur}][e{k}]overlay=x=(W-w)/2:y='{y}':enable='between(t,{t0},{t0 + d})':eof_action=repeat[y{k}]")
+        cur = f"y{k}"
+        n += 1
     run([FF, "-y", "-loglevel", "error", *inputs, "-filter_complex", ";".join(fc), "-map", f"[{cur}]", "-t", f"{total:.3f}", *ENC, out])
 
 
@@ -171,7 +183,55 @@ def duration(path):
     return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
 
 
-def voice(lines, dur, work, voice_name, rate="+8%"):
+VOICE_RATE = "+18%"   # tốc độ đọc mặc định (+8% nghe chậm so với video mẫu)
+
+
+def plan_beats(lines, head_end, voice_name, rate=None, min_seg=3.4, max_seg=5.5, lo=3, hi=6):
+    """Số ảnh biến đổi + mốc bắt đầu từng ảnh, DỰA TRÊN lời (sub) của video.
+    Đọc thử lời bằng đúng giọng/tốc độ để biết mỗi câu bắt đầu/kết thúc lúc nào; mỗi CÂU ở phần đầu = một nhịp biến đổi.
+    Câu quá dài (> max_seg) tách đôi; nhịp ngắn hơn min_seg gộp vào nhịp trước; số nhịp giới hạn lo..hi.
+    Trả về danh sách mốc bắt đầu [0.0, ...] (len = số ảnh biến đổi, mỗi nhịp kéo tới mốc kế, nhịp cuối tới head_end)."""
+    import tempfile
+    work = tempfile.mkdtemp(prefix="beats_")
+    try:
+        head = [(t, x) for t, x in lines if t < head_end]
+        _, tm = voice(head, 90.0, work, voice_name, rate or VOICE_RATE)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    starts = [0.0]
+    for st, _end, _txt in tm[1:]:
+        if st < head_end - min_seg:
+            starts.append(round(st, 2))
+    # gộp nhịp quá ngắn
+    merged = [starts[0]]
+    for s in starts[1:]:
+        if s - merged[-1] >= min_seg:
+            merged.append(s)
+    starts = merged
+
+    def segs(ss):
+        return [(ss[i], (ss[i + 1] if i + 1 < len(ss) else head_end)) for i in range(len(ss))]
+    # tách nhịp quá dài
+    out = []
+    for a, b in segs(starts):
+        k = max(1, int((b - a) // max_seg + (1 if (b - a) % max_seg > max_seg * 0.5 else 0)))
+        for j in range(k):
+            out.append(round(a + (b - a) * j / k, 2))
+    starts = out
+    # đủ tối thiểu: tách nhịp dài nhất
+    while len(starts) < lo:
+        sg = segs(starts)
+        i = max(range(len(sg)), key=lambda n: sg[n][1] - sg[n][0])
+        starts.insert(i + 1, round((sg[i][0] + sg[i][1]) / 2, 2))
+    # vượt tối đa: bỏ mốc của nhịp ngắn nhất
+    while len(starts) > hi:
+        sg = segs(starts)
+        i = min(range(1, len(sg)), key=lambda n: sg[n][1] - sg[n][0])
+        starts.pop(i)
+    return starts
+
+
+def voice(lines, dur, work, voice_name, rate=VOICE_RATE):
     """Lồng tiếng bằng Edge TTS. lines = [(thời điểm muốn bắt đầu, câu)] -> (wav dài đúng dur giây, [(bắt đầu, kết thúc, câu)] thực tế). Câu sau tự lùi nếu câu trước chưa đọc xong."""
     import asyncio, edge_tts
     parts, timing, prev_end = [], [], 0.0

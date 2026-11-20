@@ -1256,9 +1256,10 @@ def _queue_image(req: ImageRequest, prompt: str, reference_image: str | None,
                         "object": "image.task", "status": existing["status"],
                         "progress": existing.get("progress", 0),
                         "created_at": existing["created_at"]})
-        # ponytail: one Chromium worker; cap admission instead of adding a broker.
+        # Giới hạn nhận việc: mặc định 8 (thời một worker). Khi bật nhiều tab/tài khoản song song thì nâng theo CFG.max_concurrency
+        # (nếu không, LUO Chat gửi 18 việc cùng lúc sẽ bị 429 hàng loạt).
         if sum(t.get("kind") == "image" and t.get("status") in ("queued", "processing")
-               for t in tasks) >= 8:
+               for t in tasks) >= max(8, int(CFG.max_concurrency)):
             raise HTTPException(429, "Image queue is full; retry later")
         task = store.create_task("image", req.prompt)
         tid = task["id"]

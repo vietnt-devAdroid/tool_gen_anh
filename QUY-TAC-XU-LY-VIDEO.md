@@ -23,6 +23,16 @@ Khi người dùng đưa video/thư mục video để xử lý mà chưa nói r�
 - Vẫn áp dụng **Quy tắc nội dung** (mục 1): nếu video gốc có người thật nhận diện được thì **không sao chép gương mặt** (dùng người hư cấu giống kiểu dáng, cùng hành động); ăn mặc đầy đủ; không người nổi tiếng/logo/trẻ em làm chủ thể.
 - Kiểm tra: độ dài thành phẩm = độ dài gốc; xem contact sheet so với gốc (cảnh, chuyển động, nhịp); clip hỏng thì chạy lại riêng đoạn đó.
 - (Chưa chốt, hỏi người dùng khi có thư mục đầu tiên): âm thanh giữ của gốc hay của Muse; số bản gen lại mỗi video (mặc định 1).
+- **Chạy thử: chỉ 1 video** (hoặc đúng số người dùng nói, ví dụ "3 video"). Chỉ chạy cả thư mục khi người dùng nói rõ. Dùng `--only tên1,tên2` hoặc `--limit N`.
+
+#### 0d. Biến thể ĐỔI NHÂN VẬT + HÌNH TRÒN "BEFORE" xuyên suốt video (image to video)
+Khi người dùng yêu cầu "thay đổi nhân vật, giữ nguyên nội dung video gốc, luôn có hình tròn ảnh before":
+- **Hình tròn BEFORE**: ảnh before (ảnh nhân vật, lấy từ bộ nhân vật theo mã, mục 5b) cắt gọn vào đầu + vai, viền trắng, chữ **BEFORE** bên dưới, **hiện suốt toàn bộ video** (từ giây 0 đến hết), cỡ khoảng 30% cạnh ngắn của khung. Đặt ở **vị trí ít vướng nội dung** (ưu tiên phía trên, như mẫu: giữa hoặc góc trên); không che mặt/chủ thể chính, không che chữ quan trọng. Công cụ tự chọn vị trí theo độ chi tiết/chuyển động của khung hình.
+- **Đổi nhân vật chính** bằng nhân vật trong ảnh before; mọi thứ còn lại (bối cảnh, hành động, camera, nhịp, độ dài, âm thanh gốc) giữ y như gốc.
+- Công cụ: `python v2v.py <thư_mục_video> --char V04 [--offset N] [--only ...]` (cần có mã nhân vật). Mỗi cảnh gửi Muse đoạn gốc + ảnh nhân vật; ghép; dán hình tròn bằng ffmpeg (`add_before_circle`). Kết quả `<tên>_v2v_before.mp4` (bản chưa dán hình tròn: `_nocircle`). Mỗi video một cuộc trò chuyện (tiêu đề "<tên> - before").
+- **Chọn mã đúng giới tính/độ tuổi với chủ thể gốc** (chủ thể nam -> V01/V07/V13; nữ -> V04/V10/V16; trung niên V02/V05/V08/V11/V14/V17)
+- **Hạn chế đã biết**: Muse không giữ cùng một khuôn mặt qua các cảnh (mỗi cảnh tạo riêng), có thể lệch nhân vật; chữ/logo trong video gốc không tái tạo
+- Nhiều video cùng một câu lệnh: trong giao diện LUO Chat, đính kèm nhiều video rồi tích "Mỗi video 1 cuộc trò chuyện" để tạo từng cuộc riêng, chạy song song (tối đa = số tài khoản x 2).
 
 ## 1. Quy tắc nội dung (BẮT BUỘC, cao hơn mọi yêu cầu khác)
 - Mọi nhân vật là người **trưởng thành HƯ CẤU**, ăn mặc **đầy đủ, kín đáo**. Không khoả thân, nội y, đồ bơi, hở ngực/bụng, gợi dục, bạo lực/máu.
@@ -52,6 +62,14 @@ Khi người dùng đưa video/thư mục video để xử lý mà chưa nói r�
   - Video chỉ có NHẠC: tự chọn số giây hợp lý và số ảnh biến đổi sao cho mỗi ảnh ~1,2-2,5s; nhạc tự lặp lại (chỗ nối chồng mờ).
 - **Chuyển cảnh**: nhanh (<= 0,8s; hiệu ứng "quét biến đổi" ~1,2-1,4s), cảnh nối liền, **không khoảng chết > 1s**.
 - **Biến đổi vào NGAY như video gốc**: ảnh trước chỉ giữ <= 0,3s rồi bắt đầu quét sang ảnh sau (không chờ ~1s).
+
+### 3b. Video có cặp ảnh BEFORE -> AFTER ở phần đầu (nhịp bám sát video gốc)
+Áp dụng khi video mẫu cho thấy ảnh before rồi biến đổi sang ảnh after (nhiều cặp nối nhau). **Đo nhịp thật của video gốc, không đoán**:
+1. Trích khung 10 hình/giây vài giây đầu (`ffmpeg -t 8 -i source.mp4 -vf "fps=10,scale=72:-2,tile=14x6" -frames:v 1 fine.png`, mỗi ô = 0,1s) rồi **nhìn** để ghi cho MỘT cặp: (a) giữ ảnh before, (b) thời lượng quét before -> after, (c) giữ ảnh after, (d) hiệu ứng + thời lượng sang cặp kế, (e) chu kỳ cả cặp.
+2. **Thời lượng quét before -> after = đúng như gốc** (ví dụ Z0137: ~1,2s; làm nhanh hơn như 0,8s là sai, trông gấp). **Giữ ảnh after không dài hơn gốc** (Z0137: ~1,0s; đặt trong khoảng 0,9-1,2s, KHÔNG để > 1,5s vì ảnh đứng yên lâu rồi cắt đột ngột sẽ giật). Hiệu ứng sang cặp kế dùng đúng loại và độ dài của gốc (Z0137: loé trắng ~0,4s). Ảnh before chỉ giữ <= 0,3s.
+3. **Số cặp = độ dài phần đầu / chu kỳ cặp của gốc** (Z0137: chu kỳ ~2,6s, phần đầu 18s -> 7 cặp), KHÔNG chọn chu kỳ tròn tuỳ ý (như 3,0s) rồi để thừa thời gian giữ.
+4. Mốc dựng (`timeline`: `t` = lúc hiệu ứng bắt đầu, `d` = độ dài hiệu ứng): ảnh before `b_i` tại `i x chu_kỳ` (hiệu ứng sang `glow`); ảnh after `a_i` tại `b_i.t + glow + 0,05`, `d = thời lượng quét`; thời gian giữ after = chu_kỳ - (glow + 0,05 + quét) phải xấp xỉ gốc. Cặp đầu: `a_0` tại ~0,2s (gốc đã bắt đầu quét ngay từ giây 0).
+5. Sau khi dựng: xem lại khung hình vùng chuyển (không chỉ contact sheet thưa) để chắc nhịp quét/giữ khớp bảng đo ở bước 1; chỉnh rồi dựng lại (chỉ tốn ffmpeg nếu ảnh Muse đã có).
 - Lưới 2x2 (`type: grid2x2`): 4 ô cùng ảnh gốc, mỗi ô quét lên (`wipeup`) sang ảnh biến đổi tại đúng mốc video gốc, nhãn trắng viền đen dưới mỗi ô; sau lưới thay end card app bằng flow.
 - Chiều tỉ lệ & cỡ: giữ tỉ lệ video gốc (`size` trong spec). Ảnh Muse 9:16.
 
@@ -60,6 +78,8 @@ Khi người dùng đưa video/thư mục video để xử lý mà chưa nói r�
 - Video gốc **có lời nói**: viết lời mới **ngắn**, đúng ý video, bằng ngôn ngữ yêu cầu (cột Ngôn ngữ / yêu cầu người dùng; trống = giữ ngôn ngữ gốc), chia câu khớp nhịp cảnh (kể cả đoạn flow: giới thiệu upload, đang loading, ảnh after xong). Đặt `revoice` trong spec (giọng chọn bằng `transcribe.py --voices <mã>` ví dụ `en`, `pt`, `es`, `vi`). **KHÔNG hiển thị phụ đề** cho lời mới (không dùng `captions`).
 - Lồng tiếng mới **GIỮ NHẠC NỀN gốc**: `specrun` tự tách nhạc khỏi giọng gốc bằng Demucs (`separate.py`, cache cạnh video), lặp nhạc hết video và tự hạ nhỏ khi có giọng mới. Nếu không tách được thì chỉ có giọng mới (ghi vào log).
 - Lời đọc quá dài so với video sẽ báo lỗi: rút ngắn câu hoặc tăng `rate`.
+- **Tốc độ đọc mặc định `+18%`** (`pipeline.VOICE_RATE`; `+8%` nghe chậm so với video mẫu). Không đặt `rate` trong spec thì dùng mức này.
+- **Số ảnh biến đổi phải THEO LỜI (sub) của từng video**, không cố định: dùng `pipeline.plan_beats(lines, 18.0, voice_name)` -> danh sách mốc bắt đầu từng ảnh. Mỗi CÂU ở phần đầu = một nhịp biến đổi (mốc = lúc câu bắt đầu đọc, theo đúng giọng/tốc độ); câu dài hơn 5,5s tách đôi; nhịp ngắn hơn 3,4s gộp; tối thiểu 3, tối đa 6 ảnh. Thường ra 4-5 ảnh cho phần đầu 18s (trước đây 7-12 ảnh là quá nhiều). Video before->after: thời gian dôi ra dồn vào ảnh BEFORE, giữ ảnh AFTER vẫn ~1s.
 
 ## 5. Tạo ảnh bằng Muse (qua LUO Chat)
 - Prompt tiếng Anh, "photorealistic", dọc 9:16, mô tả nhân vật + trang phục đầy đủ + bối cảnh + dáng. Mỗi biến thể phải **khác rõ rệt** về nhân vật/dáng/bối cảnh.
@@ -105,3 +125,16 @@ Xem `HUONG-DAN-TU-DONG.md`: `daily.py check/download/done/fail`, đọc tab kế
 | `daily.py`, `sheetx.py` | Đọc Google Sheet, tải video mẫu |
 | `upload.py`, `drive_upload.gs` | Tải kết quả lên Drive (cần cài Apps Script) |
 | `chatctl.py` | Điều khiển hàng đợi LUO Chat bằng dòng lệnh |
+
+## 10. Bài học bổ sung (image to image, đã trả giá)
+- **Trẻ em**: gốc có trẻ em thì làm bản TOÀN NGƯỜI LỚN và nói rõ với người dùng; không tạo ảnh before/after của trẻ em thật. Ảnh `after_sample` phải LÀM MỜ mặt/chữ/logo, nếu không Muse sao chép mặt (kể cả trẻ em) sang ảnh after; prompt dặn "show ONLY the N adults, no children"; xem ảnh after cuối của từng video trước khi báo xong.
+- **Logo**: không dùng logo, trừ logo Grand Theft Auto VI người dùng đã chấp nhận cho video concept GTA (`edge_gta.png`, chạy theo mép quét: clip `{"trans":"wipedown","edge":"<png>"}`).
+- **Ảnh after ở đuôi upload** (`fafter`) phải là ảnh SAU BIẾN ĐỔI đúng concept video, tạo từ `fbefore`, không phải ảnh chung chung (lỗi Z0177).
+- **Từ bị Muse chặn**: tránh "nude", "child"... kể cả tên màu ("nude-pink" -> "blush-pink"). Áo trễ vai phải có áo/đồ bên trong cùng tông để không trông như hở.
+- **Cache và dựng lại**: Muse cache theo tiêu đề (id spec) + prompt + ảnh đầu: muốn ảnh mới thì ĐỔI `id`. `specrun` bỏ qua biến thể đã có mp4: xoá mp4 cũ rồi mới dựng lại.
+- **Kho nhân vật** chỉ 10 ảnh/mã: biến thể > 10 sẽ trùng người (Z0172 biến thể 6-10 lặp 1-5); cần mã khác hoặc ảnh tự gen. Không dùng nhóm trẻ em (V03, V06, V09, V12, V15, V18).
+- **Chữ chính xác**: dùng `text` trong stage (đóng sau khi ảnh tạo; `heart`, `line`, `arrow`, `image`, `blend: multiply`), không để Muse tự viết chữ khi cần đúng từng ký tự. Chữ chỉ nằm trên ảnh before/after ở phần đầu theo video mẫu; đoạn đuôi upload không đóng chữ nếu mẫu không có.
+- **Âm thanh**: `audio: orig_head` (giữ âm gốc phần đầu), `orig_keep` (chỉ thay lời gốc bằng giọng mới trên nền nhạc, giữ âm gốc sau mốc cắt). Nhạc bài hát gốc phải giữ nguyên, không thay nhạc khác.
+- **Nhịp**: transition nhanh như gốc, rút tổng thời lượng nếu cần; số ảnh theo sub (`plan_beats`); phụ đề từng chữ chỉ khi video mẫu có.
+- **Giao việc luồng phụ**: dùng Agent MỚI + brief ngắn trỏ `AGENT-BRIEF.md`, không fork (fork mang cả ngữ cảnh dài, rất tốn token). Lệnh như "chạy batch Z0175" gõ cho Claude, KHÔNG gõ vào khung chat của LUO Chat (sẽ bị gửi cho Muse làm prompt).
+- **Quy trình người dùng muốn**: phân tích -> spec -> dry -> MỘT bản mẫu để kiểm -> khi duyệt mới chạy 10 biến thể.

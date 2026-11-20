@@ -94,10 +94,44 @@ def build_audio(spec, src, total, work):
       Không tách được hoặc video gốc không có nhạc nền thì chỉ có giọng mới.
     - Không có `revoice` (video chỉ có nhạc): LẶP LẠI nhạc gốc (chồng mờ ở chỗ nối) cho hết video (audio="loop", mặc định); audio="silent" thì không tiếng."""
     out = os.path.join(work, "audio.m4a")
+    if spec.get("audio") == "orig_head":   # GIỮ NGUYÊN âm thanh gốc ở phần đầu (đúng độ dài gốc); phần đuôi dùng nhạc nền đã tách, lặp lại
+        head = float(spec.get("audio_head") or P.duration(src))
+        hw = os.path.join(work, "orig_head.wav")
+        P.run([P.FF, "-y", "-loglevel", "error", "-i", src, "-vn", "-t", f"{head:.3f}", "-ar", "44100", "-ac", "2", hw])
+        music = music_stem(src)
+        fadeo = max(0.0, total - 0.6)
+        base = f"[0:a]aresample=44100,aformat=channel_layouts=stereo,apad=whole_dur={total:.3f}[o]"
+        if music:
+            mloop = looped_audio(music, total, work, "music_loop.wav")
+            fc = (base + f";[1:a]aresample=44100,aformat=channel_layouts=stereo,atrim=start={head:.3f},asetpts=PTS-STARTPTS,adelay={int(head * 1000)}|{int(head * 1000)},"
+                  f"afade=t=in:st={head:.3f}:d=0.4,volume=0.8[m];[o][m]amix=inputs=2:normalize=0:duration=longest,atrim=0:{total:.3f},afade=t=out:st={fadeo:.3f}:d=0.6[a]")
+            P.run([P.FF, "-y", "-loglevel", "error", "-i", hw, "-i", mloop, "-filter_complex", fc, "-map", "[a]", "-c:a", "aac", "-b:a", "160k", "-t", f"{total:.3f}", out])
+        else:
+            P.run([P.FF, "-y", "-loglevel", "error", "-i", hw, "-filter_complex", base + f";[o]atrim=0:{total:.3f},afade=t=out:st={fadeo:.3f}:d=0.6[a]", "-map", "[a]", "-c:a", "aac", "-b:a", "128k", "-t", f"{total:.3f}", out])
+        return out
     rv = spec.get("revoice")
     fade = max(0.0, total - 0.6)
+    if rv and spec.get("audio") == "orig_keep":
+        # GIỮ NGUYÊN nhạc/bài hát gốc: chỉ thay đoạn lời nói gốc đầu video (0..cut) bằng lời mới trên nền nhạc đã tách, từ cut trở đi dùng NGUYÊN âm thanh gốc (kể cả giọng hát/lead);
+        # đuôi (flow) dùng lại đoạn cuối âm thanh gốc. Lời mới hạ nhạc nhẹ (sidechain).
+        ak = spec.get("audio_keep") or {}
+        cut, head = float(ak.get("cut", 3.3)), float(ak.get("head") or P.duration(src))
+        tail_d = max(0.0, total - head)
+        ow = os.path.join(work, "orig_full.wav")
+        P.run([P.FF, "-y", "-loglevel", "error", "-i", src, "-vn", "-ar", "44100", "-ac", "2", ow])
+        vw, _ = P.voice([(t, txt) for t, txt in rv["lines"] if t < total], total, work, rv["name"], rate=rv.get("rate", P.VOICE_RATE))
+        music = music_stem(src)
+        fcm = ("[0:a]atrim=%.3f:%.3f,asetpts=PTS-STARTPTS[B];" % (cut, head)) + (("[1:a]atrim=0:%.3f,asetpts=PTS-STARTPTS,afade=t=out:st=%.3f:d=0.2,volume=1.6[A];[A][B]acrossfade=d=0.2:c1=tri:c2=tri[H];" % (cut + 0.2, cut)) if music else "[B]acopy[H];")
+        if not music:
+            fcm = "[0:a]atrim=0:%.3f,asetpts=PTS-STARTPTS[H];" % head
+        fcm += ("[0:a]atrim=%.3f:%.3f,asetpts=PTS-STARTPTS,volume=0.85[T];[H][T]concat=n=2:v=0:a=1[M];" % (max(0.0, head - tail_d), head)) if tail_d > 0.05 else "[H]acopy[M];"
+        fcm += ("[2:a]aresample=44100,aformat=channel_layouts=stereo,asplit=2[v1][v2];[M][v1]sidechaincompress=threshold=0.02:ratio=3:attack=15:release=350[md];[md][v2]amix=inputs=2:normalize=0:duration=longest,"
+                f"alimiter=limit=0.95,atrim=0:{total:.3f},afade=t=out:st={fade:.3f}:d=0.6[a]")
+        ins = ["-i", ow] + (["-i", music] if music else ["-i", ow]) + ["-i", vw]
+        P.run([P.FF, "-y", "-loglevel", "error", *ins, "-filter_complex", fcm, "-map", "[a]", "-c:a", "aac", "-b:a", "160k", "-t", f"{total:.3f}", out])
+        return out
     if rv:
-        vw, _ = P.voice([(t, txt) for t, txt in rv["lines"] if t < total], total, work, rv["name"], rate=rv.get("rate", "+8%"))
+        vw, _ = P.voice([(t, txt) for t, txt in rv["lines"] if t < total], total, work, rv["name"], rate=rv.get("rate", P.VOICE_RATE))
         music = music_stem(src) if rv.get("keep_music", True) else None
         if music:
             mloop = looped_audio(music, total, work, "music_loop.wav")
@@ -136,7 +170,7 @@ def expand_clips(spec, clips, head_end, imgs, src, work):
             for i, k in enumerate(keys):
                 out.append({"img": resolve(imgs, k, src, work), "t": round(i * head_end / n, 3), "trans": e.get("trans", "fade"), "d": e.get("d", 0.3)})
         else:
-            out.append({"img": resolve(imgs, c["img"], src, work), "t": c.get("t", 0), "trans": c.get("trans", "fade"), "d": c.get("d", 0.3)})
+            out.append({"img": resolve(imgs, c["img"], src, work), "t": c.get("t", 0), "trans": c.get("trans", "fade"), "d": c.get("d", 0.3), "edge": c.get("edge")})
     return out
 
 
@@ -232,6 +266,8 @@ def run_variant(spec, i, args):
                 for n, pth in zip(idx, P.gen_images(f"{spec['id']} - clip chuyển động", [{"text": stage[n]["prompt"], "files": files(stage[n])} for n in idx], kind="video", duration=dur)):
                     paths[n] = pth
         for it, pth in zip(stage, paths):
+            if it.get("text") and pth and not str(pth).lower().endswith((".mp4", ".webm", ".mov")):
+                pth = overlay_text(pth, it["text"], os.path.join(work, f"txt_{it['key']}.png"))
             imgs[it["key"]] = pth
     (render_grid if spec.get("type") == "grid2x2" else render_timeline)(spec, V, imgs, src, work, out)
     if not args.dry:
@@ -239,6 +275,93 @@ def run_variant(spec, i, args):
             P.publish(f"{spec['id']} - thành phẩm", f"{spec['id']} biến thể {i + 1:02d}", out)
         except Exception as e:  # noqa: BLE001
             print("chưa đưa vào LUO Chat được:", str(e)[:100], flush=True)
+    return out
+
+
+def overlay_text(src, t, out):
+    """item "text": một mục hoặc DANH SÁCH mục, đóng lên ảnh SAU khi ảnh được tạo (Muse viết chữ không chuẩn).
+    Mục chữ: {"s": "My Love", "x": 0.5, "y": 0.8, "size": 0.09, "color": "#141414", "font": "segoesc.ttf", "rot": -4, "outline": "#000", "ow": 0, "alpha": 0.92, "blur": 0.5}
+      x,y = tâm chữ (tỉ lệ khung); size = chiều cao chữ / chiều cao ảnh; rot = độ nghiêng; ow = độ dày viền (0 = không viền); "s" có \n thì nhiều dòng.
+    Mục hình: {"shape": "line", "x1":..,"y1":..,"x2":..,"y2":.., "w": 0.003, "color": ..} | {"shape": "heart", "x":..,"y":..,"size": 0.03, "color": ..} | {"shape": "arrow", "x1","y1","x2","y2","w","color"}"""
+    from PIL import Image, ImageDraw, ImageFont, ImageFilter
+    import math
+    im = Image.open(src).convert("RGBA")
+    W, H = im.size
+    items = t if isinstance(t, list) else [t]
+    for it in items:
+        if isinstance(it, str):
+            it = {"s": it}
+        lay = Image.new("RGBA", (W * 2, H * 2), (0, 0, 0, 0))
+        d = ImageDraw.Draw(lay)
+        col = it.get("color", "#ffffff")
+        sh = it.get("shape")
+        if sh in ("line", "arrow"):
+            pts = [(W + it["x1"] * W - W * 0.5 * 0, H + it["y1"] * H - H * 0.5 * 0)]
+            x1, y1, x2, y2 = it["x1"] * W, it["y1"] * H, it["x2"] * W, it["y2"] * H
+            lw = max(1, int(it.get("w", 0.003) * H))
+            d.line([(x1 + W * 0.5, y1 + H * 0.5), (x2 + W * 0.5, y2 + H * 0.5)], fill=col, width=lw)
+            if sh == "arrow":
+                ang = math.atan2(y2 - y1, x2 - x1)
+                for da in (2.6, -2.6):
+                    d.line([(x2 + W * 0.5, y2 + H * 0.5), (x2 + W * 0.5 + 0.03 * H * math.cos(ang + da), y2 + H * 0.5 + 0.03 * H * math.sin(ang + da))], fill=col, width=lw)
+        elif sh == "image":
+            lg = Image.open(it["path"]).convert("RGBA")
+            lw_ = int(it.get("w", 0.3) * W)
+            lg = lg.resize((lw_, int(lg.height * lw_ / lg.width)), Image.LANCZOS)
+            lay.alpha_composite(lg, (int(it.get("x", 0.2) * W + W * 0.5 - lg.width / 2), int(it.get("y", 0.9) * H + H * 0.5 - lg.height / 2)))
+        elif sh == "heart" and it.get("fill"):   # trái tim tô màu có viền (đường cong chuẩn), x,y = tâm, size = chiều cao/ảnh, rot = nghiêng
+            hh = it.get("size", 0.03) * H
+            cx, cy = it["x"] * W + W * 0.5, it["y"] * H + H * 0.5
+            pts = []
+            for k in range(180):
+                tt = 2 * math.pi * k / 180
+                hx = 16 * math.sin(tt) ** 3
+                hy = 13 * math.cos(tt) - 5 * math.cos(2 * tt) - 2 * math.cos(3 * tt) - math.cos(4 * tt)
+                a_ = math.radians(it.get("rot", 0))
+                px, py = hx * (hh / 30.0), -hy * (hh / 30.0)
+                pts.append((cx + px * math.cos(a_) + py * math.sin(a_), cy - px * math.sin(a_) + py * math.cos(a_)))
+            d.polygon(pts, fill=it["fill"], outline=col)
+            d.line(pts + [pts[0]], fill=col, width=max(2, int(hh / 14)))
+        elif sh == "heart":
+            r = it.get("size", 0.03) * H
+            cx, cy = it["x"] * W + W * 0.5, it["y"] * H + H * 0.5
+            lw = max(2, int(r / 10))
+            d.ellipse((cx - r, cy - r * 0.9, cx, cy + r * 0.1), outline=col, width=lw)
+            d.ellipse((cx, cy - r * 0.9, cx + r, cy + r * 0.1), outline=col, width=lw)
+            d.line([(cx - r * 0.95, cy - r * 0.15), (cx + r * 0.5, cy + r * 1.1), (cx + r * 0.95, cy - r * 0.15)], fill=col, width=lw)
+        else:
+            fs = max(12, int(H * it.get("size", 0.07)))
+            try:
+                f = ImageFont.truetype("C:/Windows/Fonts/" + it.get("font", "arialbd.ttf"), fs)
+            except OSError:
+                f = ImageFont.truetype("C:/Windows/Fonts/arialbd.ttf", fs)
+            ow = it.get("ow", max(2, fs // 14) if "ow" not in it and "outline" in it else it.get("ow", 0))
+            kw = {"stroke_width": ow, "stroke_fill": it.get("outline", "#000000")} if ow else {}
+            cx, cy = it.get("x", 0.5) * W, it.get("y", 0.85) * H
+            d.multiline_text((cx + W * 0.5, cy + H * 0.5), it["s"], font=f, anchor="mm", fill=col, align="center", **kw) if False else d.text((cx + W * 0.5, cy + H * 0.5), it["s"], font=f, anchor="mm", fill=col, align="center", **kw)
+        if it.get("rot") and not (sh == "heart" and it.get("fill")):
+            c = (it.get("x", 0.5) * W + W * 0.5, it.get("y", 0.85) * H + H * 0.5) if not sh else (W, H)
+            lay = lay.rotate(it["rot"], resample=Image.BICUBIC, center=c)
+        if it.get("blur"):
+            lay = lay.filter(ImageFilter.GaussianBlur(it["blur"]))
+        if it.get("alpha", 1) < 1:
+            al = lay.getchannel("A").point(lambda v: int(v * it["alpha"]))
+            lay.putalpha(al)
+        lc = lay.crop((int(W * 0.5), int(H * 0.5), int(W * 1.5), int(H * 1.5)))
+        if it.get("blend") == "multiply":   # chữ "in" lên bề mặt: nhân với màu nền nên thấy rõ vân tường xuyên qua nét chữ
+            import numpy as np
+            base = np.asarray(im).astype(float)
+            la = np.asarray(lc).astype(float)
+            a = (la[..., 3:4] / 255.0)
+            if it.get("grain"):
+                rng = np.random.default_rng(7)
+                a = np.clip(a * (1 - it["grain"] * rng.random(a.shape)), 0, 1)   # nét chì: chỗ đậm chỗ nhạt
+            mul = base[..., :3] * (la[..., :3] / 255.0)
+            blended = base[..., :3] * (1 - a) + mul * a
+            im = Image.fromarray(np.dstack([blended, base[..., 3:4]]).clip(0, 255).astype("uint8"), "RGBA")
+        else:
+            im.alpha_composite(lc)
+    im.convert("RGB").save(out)
     return out
 
 

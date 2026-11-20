@@ -248,7 +248,11 @@ def run_video(m, chat, ev):
     auds = [file_ref(f) for f in m["files"] if f["type"] == "audio"]
     body = {"prompt": guard(m["text"]), "aspect_ratio": m["aspect"], "timeout": int(s["timeout"]), "raw_prompt": bool(s.get("raw_prompt"))}
     ex = m.get("extra") or {}
-    if ex.get("wait_final"):    # Muse tự nối nhiều clip cho video > 10s: gửi lệnh nguyên văn, không ép thời lượng, đợi Muse xong rồi lấy video cuối
+    # "Thời lượng tự động" + video đính kèm dài hơn 10s (Muse chỉ tạo clip <= 10s): dùng cách nối clip như v2v (không ép thời lượng)
+    auto_long = (not m.get("duration")) and bool(vids) and (video_seconds(vids[0]) or 0) > 10.05
+    if ex.get("wait_final") or auto_long:    # Muse tự nối nhiều clip cho video > 10s: gửi lệnh nguyên văn, không ép thời lượng, đợi Muse xong rồi lấy video cuối
+        if auto_long:
+            log(m, "Video gốc dài hơn 10s: gửi lệnh nguyên văn, chờ Muse nối clip cho đủ độ dài (có thể mất 4-7 phút)")
         body["raw_prompt"], body["wait_final"] = True, True
         if vids:
             body["want_seconds"] = video_seconds(vids[0])
